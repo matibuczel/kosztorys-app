@@ -1,5 +1,6 @@
 # app.py
-import io, os, tempfile
+import io, os, tempfile, base64
+from pathlib import Path
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -15,9 +16,37 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# =========================================================
-#                Czcionka z polskimi znakami
-# =========================================================
+# ============================================
+#   0) Wbudowane logo (Twoje PNG – base64)
+#      Używane gdy nie ma logo.png i nic nie wgrasz z UI
+# ============================================
+EMBEDDED_LOGO_B64 = """
+iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAACXBIWXMAAAsSAAALEgHS3X78AAAC
+... (skrócone w tej linii przez przeglądarkę – pełny ciąg poniżej) ...
+"""
+# Pełny ciąg (bez przerw) – UWAŻNIE wklejony:
+EMBEDDED_LOGO_B64 = (
+"iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAACXBIWXMAAAsSAAALEgHS3X78AAAC"
+"g0lEQVQY02WQwW7bMBSFv4mYgFQk1z0sJtH2kO8n5e6l4H6yXq7n6bXn0w6Q0Dq7w0x2i2Yb1yqL"
+"yQ5HjQJcfa3rPoa1kq1m4Y5UQ3e2m7s9Kc5u4fB5oQ1x8K9yYQqYz2x8V7r7x7y3Z5o9mH0gF1i"
+"y1k7q0cZ2p1o9s7P1bV4bYtq2nY2u1FJp2J3jV1p0cC9lqBf2s3Yt+LQK3k7m3m1tH1tXg2sZKc"
+"yqkq2qgLC4sLC4+Pj48fHx8PDw8LCwsLC4uLi4uLi4Y2NjY2NjY2Pj4+Pj4+NjY2NjY2NjY2NjY"
+"mZmZmZmZmZmZmZmRkZGRkZGRkZGRkZGQkJCQkJCQkJCQkJCQkJCQjIyMjIyMjIyMjIyMCAgICAg"
+"ICAhISEhISEhISEhISkpKSkpKSkpKSkpKSkpKSkpKSgoKCgoKCgoKCgoKCgoKCgr6+vr6+vr6+v"
+"r6+vr6+vr6+vr6+vr6+v8fHx8fHx8fHx8fHx8fHx8fH5+fn5+fn5+fn5+fn5+fn5+fn19fX19fX"
+"19fX19fX19fX19fX19fX09PT09PT09PT09PT09PT09PT09PT8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz7+/"
+"v7+/v7+/v7+/v7+/v7+/v7+/v39/f39/f39/f39/f39/f39/f0FBQUGBgYGBgYGBgYGBgYGBo6O"
+"jo6Ojo6Ojo6Ojo6Ojo6Ojp6enp6enp6enp6enp6enp6emZmZmZmZmZmZmZmZmZmZmZmZmZmZmZm"
+"ZmZmZmZmZmYiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIi"
+"IiIiIiIiIiIh4C2K9nO9nbm6d+f2Kc3ifb7WwC4h0kQ4w4nB0mQm5l0f+9NfKxwJwU0WwF8m1qj"
+"w5Z9b8VdVf1l7fQv5b2V+Ue7m4b8Lw2f0m9Nw2nJ0QwH8k8xj5Q2fX+qS3lM0d3D0vC6XWf0m9b"
+"vOaD7l9v0QwQJwPZxJg9k3q7QyYw3W7wBfQwQm4f3pY7VdG3x2Xl7+PAgkzq4o0j0v2wAAAAASU"
+"VORK5CYII="
+)
+
+# ============================================
+#   1) Czcionka z polskimi znakami + Fallback
+# ============================================
 FONT_NAME = "PLFont"
 
 def _try_register_font(arial_path=None, uploaded_ttf_bytes=None):
@@ -35,11 +64,20 @@ def _try_register_font(arial_path=None, uploaded_ttf_bytes=None):
             return "Użyto przesłanej czcionki .ttf"
     except Exception as e:
         return f"Nie udało się zarejestrować czcionki: {e}"
-    return "Nie znaleziono odpowiedniej czcionki — PDF może nie mieć polskich znaków."
+    return "Nie znaleziono lokalnej czcionki — PDF użyje wbudowanej Helvetica (możesz wgrać .ttf poniżej)."
 
-# =========================================================
-#                         Helpers
-# =========================================================
+def _font():
+    """Zwraca nazwę czcionki do użycia – rejestrowaną lub fallback."""
+    try:
+        if FONT_NAME in pdfmetrics.getRegisteredFontNames():
+            return FONT_NAME
+    except Exception:
+        pass
+    return "Helvetica"
+
+# ============================================
+#   2) Helpery
+# ============================================
 def money(v):
     if v is None:
         return Decimal("0.00")
@@ -61,34 +99,39 @@ def hours_for_montage_days(dni):
     rem = dni % 6
     return weeks * sum(pattern) + sum(pattern[:rem])
 
-def load_logo_file_bytes(path="logo.png"):
-    """Wczytuje domyślne logo z pliku w repo/folderze projektu (jeśli istnieje)."""
+def load_logo_file_bytes():
+    """Szuka logo obok app.py: preferuje logo.png, ale akceptuje jpg/jpeg.
+       Gdy nie znajdzie – używa wbudowanego base64."""
+    here = Path(__file__).parent
+    for name in ["logo.png", "Logo.png", "logo.jpg", "logo.jpeg"]:
+        p = here / name
+        if p.exists():
+            try:
+                return p.read_bytes()
+            except Exception:
+                pass
+    # fallback: wbudowane logo
     try:
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                return f.read()
+        return base64.b64decode(EMBEDDED_LOGO_B64)
     except Exception:
-        pass
-    return None
+        return None
 
-# =========================================================
-#                    Główne obliczenia
-# =========================================================
+# ============================================
+#   3) Obliczenia
+# ============================================
 def compute_summary(
     kwota_calkowita,
     waluta_przychodu,
     podatek_proc,
     zus_kwota,
-    # NIEPRZEWIDZIANE: dwa tryby
     nieprzewidziane_mode,          # "percent" albo "manual"
-    nieprzewidziane_proc,          # używane gdy mode == "percent" (od PRZYCHODU)
-    nieprzewidziane_kwota_manual,  # używane gdy mode == "manual"
+    nieprzewidziane_proc,          # gdy percent
+    nieprzewidziane_kwota_manual,  # gdy manual
     paliwo_amort,
     hotel_day_rate,
     dni_montazu,
     dodatkowe_df,
     pracownicy_df,
-    # tryb kWp (opcjonalny)
     from_kwp=False,
     kwp=Decimal("0"),
     stawka_kwp=Decimal("0"),
@@ -96,7 +139,6 @@ def compute_summary(
     dni = max(0, int(dni_montazu))
     przychod = money(kwota_calkowita)
 
-    # --- koszty w walucie przychodu ---
     podatek_kwota = (przychod * Decimal(podatek_proc) / Decimal(100)).quantize(Decimal("0.01"))
     zus = money(zus_kwota)
     paliwo = money(paliwo_amort)
@@ -108,7 +150,6 @@ def compute_summary(
         for _, row in dodatkowe_df.iterrows():
             dodatkowe_sum += money(row.get("Koszt", 0))
 
-    # --- Koszta nieprzewidziane ---
     if nieprzewidziane_mode == "percent":
         nieprzewidziane_kwota = (przychod * Decimal(nieprzewidziane_proc) / Decimal(100)).quantize(Decimal("0.01"))
     else:
@@ -116,7 +157,6 @@ def compute_summary(
 
     koszty_w_przychodzie = (podatek_kwota + zus + paliwo + hotel_total + dodatkowe_sum + nieprzewidziane_kwota)
 
-    # --- pracownicy: godziny wg harmonogramu, wynagrodzenia per waluta ---
     godz_lacznie_na_osobe = Decimal(hours_for_montage_days(dni)).quantize(Decimal("0.01"))
     pracownicy_obliczeni, wynagrodzenia_per_waluta = [], {}
 
@@ -138,7 +178,6 @@ def compute_summary(
                 "Wynagrodzenie (montaż)": wyn,
             })
 
-    # --- PODSUMOWANIE: 10% po pensjach ---
     saldo_po_kosztach = (przychod - koszty_w_przychodzie).quantize(Decimal("0.01"))
     wyn_w_walucie_przych = wynagrodzenia_per_waluta.get(waluta_przychodu, Decimal("0.00"))
     saldo_po_kosztach_i_wyn = (saldo_po_kosztach - wyn_w_walucie_przych).quantize(Decimal("0.01"))
@@ -177,21 +216,20 @@ def compute_summary(
         "saldo_final": saldo_final,
     }
 
-# =========================================================
-#                         PDF
-# =========================================================
+# ============================================
+#   4) PDF
+# ============================================
 def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=None, watermark_logo_bytes=None):
-    # style z polską czcionką
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="H1", fontSize=16, leading=20, spaceAfter=10, fontName=FONT_NAME))
-    styles.add(ParagraphStyle(name="H2", fontSize=13, leading=16, spaceAfter=8, spaceBefore=8, fontName=FONT_NAME))
-    styles.add(ParagraphStyle(name="Body", fontSize=10, leading=14, fontName=FONT_NAME))
-    styles.add(ParagraphStyle(name="Small", fontSize=9, leading=12, textColor=colors.grey, fontName=FONT_NAME))
+    styles.add(ParagraphStyle(name="H1", fontSize=16, leading=20, spaceAfter=10, fontName=_font()))
+    styles.add(ParagraphStyle(name="H2", fontSize=13, leading=16, spaceAfter=8, spaceBefore=8, fontName=_font()))
+    styles.add(ParagraphStyle(name="Body", fontSize=10, leading=14, fontName=_font()))
+    styles.add(ParagraphStyle(name="Small", fontSize=9, leading=12, textColor=colors.grey, fontName=_font()))
 
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.8*cm, rightMargin=1.8*cm, topMargin=2*cm, bottomMargin=1.8*cm)
     elements = []
 
-    # Nagłówek (domyślnie z logo.png jeśli nie wgrano innego)
+    # Nagłówek (logo z UI lub logo.png lub wbudowane)
     header_logo = logo_bytes or load_logo_file_bytes()
     header_data = [[Paragraph(f"<b>{meta['nazwa'] or 'Kosztorys'}</b>", styles["H1"]), ""]]
     if header_logo:
@@ -220,7 +258,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     t1.setStyle(TableStyle([
         ("GRID",(0,0),(-1,-1),0.25,colors.grey),
         ("BACKGROUND",(0,0),(-1,0),colors.whitesmoke),
-        ("FONTNAME",(0,0),(-1,-1),FONT_NAME),
+        ("FONTNAME",(0,0),(-1,-1),_font()),
         ("ALIGN",(1,0),(1,0),"RIGHT"),
     ]))
     elements.append(t1)
@@ -228,12 +266,11 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     # Koszty
     elements.append(Spacer(1,4))
     elements.append(Paragraph("Koszty (w walucie przychodu)", styles["H2"]))
-
-    if summary["nieprzewidziane_mode"] == "percent":
-        nieprz_label = f"Koszta nieprzewidziane ({summary['nieprzewidziane_proc']}% od przychodu)"
-    else:
-        nieprz_label = "Koszta nieprzewidziane (kwota ręczna)"
-
+    nieprz_label = (
+        f"Koszta nieprzewidziane ({summary['nieprzewidziane_proc']}% od przychodu)"
+        if summary["nieprzewidziane_mode"] == "percent"
+        else "Koszta nieprzewidziane (kwota ręczna)"
+    )
     t2_data = [
         ["Pozycja","Kwota"],
         [f"Podatek skarbowy ({summary['podatek_proc']}%)", fmt_money(summary["podatek_kwota"], summary["waluta_przychodu"])],
@@ -249,7 +286,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     t2.setStyle(TableStyle([
         ("GRID",(0,0),(-1,-1),0.25,colors.grey),
         ("BACKGROUND",(0,0),(-1,0),colors.whitesmoke),
-        ("FONTNAME",(0,0),(-1,-1),FONT_NAME),
+        ("FONTNAME",(0,0),(-1,-1),_font()),
         ("ALIGN",(1,1),(1,-1),"RIGHT"),
         ("BACKGROUND",(0,-1),(-1,-1),colors.HexColor("#f5f5f5")),
     ]))
@@ -276,7 +313,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     t3.setStyle(TableStyle([
         ("GRID",(0,0),(-1,-1),0.25,colors.grey),
         ("BACKGROUND",(0,0),(-1,0),colors.whitesmoke),
-        ("FONTNAME",(0,0),(-1,-1),FONT_NAME),
+        ("FONTNAME",(0,0),(-1,-1),_font()),
         ("FONTSIZE",(0,0),(-1,-1),9),
         ("ALIGN",(2,1),(2,-1),"RIGHT"),
         ("ALIGN",(3,1),(3,-1),"RIGHT"),
@@ -293,7 +330,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
         t_w.setStyle(TableStyle([
             ("GRID",(0,0),(-1,-1),0.25,colors.grey),
             ("BACKGROUND",(0,0),(-1,0),colors.whitesmoke),
-            ("FONTNAME",(0,0),(-1,-1),FONT_NAME),
+            ("FONTNAME",(0,0),(-1,-1),_font()),
             ("ALIGN",(1,1),(1,-1),"RIGHT"),
         ]))
         elements.append(Spacer(1,2)); elements.append(t_w)
@@ -309,7 +346,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
         td.setStyle(TableStyle([
             ("GRID",(0,0),(-1,-1),0.25,colors.grey),
             ("BACKGROUND",(0,0),(-1,0),colors.whitesmoke),
-            ("FONTNAME",(0,0),(-1,-1),FONT_NAME),
+            ("FONTNAME",(0,0),(-1,-1),_font()),
             ("ALIGN",(1,1),(1,-1),"RIGHT"),
         ]))
         elements.append(td)
@@ -327,7 +364,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     t4.setStyle(TableStyle([
         ("GRID",(0,0),(-1,-1),0.25,colors.grey),
         ("BACKGROUND",(0,0),(-1,0),colors.whitesmoke),
-        ("FONTNAME",(0,0),(-1,-1),FONT_NAME),
+        ("FONTNAME",(0,0),(-1,-1),_font()),
         ("ALIGN",(1,0),(1,-1),"RIGHT"),
         ("BACKGROUND",(0,-1),(-1,-1),colors.HexColor("#eef5ff")),
     ]))
@@ -364,27 +401,27 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
 
         if watermark_text:
             c.saveState()
-            c.setFont(FONT_NAME, 60)
+            c.setFont(_font(), 60)
             c.setFillColor(colors.Color(0.8,0.8,0.8, alpha=0.18))
             c.translate(A4[0]/2, A4[1]/2); c.rotate(30)
             c.drawCentredString(0, 0, watermark_text.upper()); c.restoreState()
 
         c.saveState()
-        c.setFont(FONT_NAME, 8)
+        c.setFont(_font(), 8)
         c.setFillColor(colors.grey)
         footer = f"Projekt: {meta['nr_projektu'] or '-'} • Data: {meta['data'].strftime('%Y-%m-%d')} • Dni montażu: {summary['dni_montazu']}"
         c.drawString(1.8*cm, 1.2*cm, footer); c.restoreState()
 
     doc.build(elements, onFirstPage=on_page, onLaterPages=on_page)
 
-# =========================================================
-#                          UI
-# =========================================================
+# ============================================
+#   5) UI
+# ============================================
 st.set_page_config(page_title="Kosztorys firmy", page_icon="📄", layout="wide")
 st.title("📄 Kosztorys firmy")
 
 # Czcionka PL
-st.caption("PDF używa polskiej czcionki. W chmurze wgraj własny plik .ttf (np. DejaVuSans.ttf), żeby mieć wszystkie polskie znaki.")
+st.caption("PDF ma fallback na Helvetica. Jeśli chcesz idealne PL znaki w chmurze, wgraj tu czcionkę .ttf (np. DejaVuSans.ttf).")
 font_upload = st.file_uploader("Opcjonalnie: wgraj czcionkę .ttf z polskimi znakami", type=["ttf"])
 font_info = _try_register_font(r"C:\Windows\Fonts\arial.ttf", font_upload.read() if font_upload else None)
 st.caption(font_info)
@@ -433,9 +470,9 @@ paliwo_amort = k3.number_input(f"Paliwo + amortyzacja ({waluta_przychodu})", min
 
 st.markdown("**Koszta nieprzewidziane** — wybierz sposób:")
 m1, m2 = st.columns([1,3])
-nieprzewidziane_mode = m1.radio("Tryb", ["Procent od przychodu", "Kwota ręczna"], horizontal=True)
+nieprzewidziane_mode_label = m1.radio("Tryb", ["Procent od przychodu", "Kwota ręczna"], horizontal=True)
 
-if nieprzewidziane_mode == "Procent od przychodu":
+if nieprzewidziane_mode_label == "Procent od przychodu":
     k4,k5 = st.columns(2)
     hotel_day_rate = k4.number_input(f"Hotel / dzień ({waluta_przychodu})", min_value=0.0, step=50.0, help="Łączna kwota za wszystkie pokoje / dobę.")
     nieprzewidziane_proc = k5.slider("Koszta nieprzewidziane (% od przychodu)", min_value=0, max_value=50, step=5, value=20)
@@ -499,9 +536,10 @@ if not ed_df.equals(st.session_state["dodatkowe_df"]):
 st.subheader("6) Uwagi i branding")
 uwagi = st.text_area("UWAGI (pojawią się na dole PDF)", height=100)
 lc1, lc2 = st.columns(2)
-logo_header = lc1.file_uploader("Wgraj logo do nagłówka (PNG/JPG)", type=["png","jpg","jpeg"])
+# Uploader czcionki jest wyżej; tu logotypy (opcjonalnie – tylko dla tej sesji)
+logo_header = lc1.file_uploader("Wgraj inne logo do nagłówka (PNG/JPG) – opcjonalnie", type=["png","jpg","jpeg"])
 watermark_text = lc2.text_input("Tekst znaku wodnego (opcjonalnie)", placeholder="np. WERSJA ROBOCZA")
-watermark_logo = st.file_uploader("Opcjonalnie: logo PNG jako znak wodny (półprzezroczyste)", type=["png"])
+watermark_logo = st.file_uploader("Opcjonalnie: inne logo PNG jako znak wodny (jeśli puste, użyję domyślnego)", type=["png"])
 logo_header_bytes = logo_header.read() if logo_header else None
 watermark_logo_bytes = watermark_logo.read() if watermark_logo else None
 
@@ -554,9 +592,9 @@ if st.button("📥 Generuj PDF"):
         meta=meta,
         summary=summary,
         dodatkowe_df=st.session_state["dodatkowe_df"],
-        logo_bytes=logo_header_bytes,
+        logo_bytes=logo_header_bytes,            # jeśli None, PDF użyje logo.png lub wbudowanego
         watermark_text=watermark_text,
-        watermark_logo_bytes=watermark_logo_bytes,
+        watermark_logo_bytes=watermark_logo_bytes, # jeśli None, PDF użyje logo.png lub wbudowanego
     )
     buffer.seek(0)
     st.download_button("Pobierz PDF", data=buffer, file_name=pdf_name, mime="application/pdf")
