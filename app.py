@@ -402,60 +402,65 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
 # 5) UI — Streamlit
 # ————————————————————————————————————————————————————————————————
 st.set_page_config(page_title="Kosztorys firmy", page_icon="📄", layout="wide")
-# ==== TŁO APLIKACJI (tylko w UI, NIE w PDF) ====
-import base64  # jeśli już masz import base64 wyżej — ten wiersz pomiń
+# ==== TŁO APLIKACJI (stałe tło z logo.png; tylko UI, NIE w PDF) ====
+import base64  # jeśli już masz import base64 na górze pliku, ten wiersz możesz pominąć
 
-def _set_bg_gradient():
-    st.markdown(
-        """
-        <style>
-        .stApp {
-            background: linear-gradient(135deg, #f7f9fc 0%, #eef4ff 50%, #f7f9fc 100%) !important;
-            background-attachment: fixed;
-        }
-        /* delikatne "karty" pod treścią */
-        .stApp [data-testid="stVerticalBlock"] > div {
-            background: rgba(255,255,255,0.65);
-            border-radius: 14px;
-            padding: 12px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+def _apply_fixed_bg_from_repo_logo():
+    """
+    Ustawia tło UI na obraz z pliku repo (logo.png / .jpg),
+    a jeśli go nie ma, używa delikatnego gradientu.
+    """
+    try:
+        # ta funkcja jest już w Twoim pliku; zwraca bezpieczne PNG bytes
+        logo_bytes = load_local_logo_bytes()
+    except Exception:
+        logo_bytes = None
 
-def _set_bg_image(img_bytes: bytes):
-    b64 = base64.b64encode(img_bytes).decode("utf-8")
-    st.markdown(
-        f"""
-        <style>
-        .stApp {{
-            background: url("data:image/png;base64,{b64}") no-repeat center center fixed !important;
-            background-size: cover !important;
-        }}
-        .stApp [data-testid="stVerticalBlock"] > div {{
-            background: rgba(255,255,255,0.70);
-            border-radius: 14px;
-            padding: 12px;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    if logo_bytes:  # mamy logo w repo
+        b64 = base64.b64encode(logo_bytes).decode("utf-8")
+        st.markdown(
+            f"""
+            <style>
+            .stApp {{
+                /* delikatny „veil” + obraz w tle */
+                background:
+                    linear-gradient(rgba(255,255,255,0.85), rgba(255,255,255,0.85)),
+                    url("data:image/png;base64,{b64}") no-repeat center center fixed !important;
+                background-size: cover !important;
+            }}
+            /* lekko „kartowy” wygląd zawartości, żeby tekst był czytelny */
+            .stApp [data-testid="stVerticalBlock"] > div {{
+                background: rgba(255,255,255,0.70);
+                border-radius: 14px;
+                padding: 12px;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        # fallback – gradient, gdyby pliku logo nie było
+        st.markdown(
+            """
+            <style>
+            .stApp {
+                background: linear-gradient(135deg, #f7f9fc 0%, #eef4ff 50%, #f7f9fc 100%) !important;
+                background-attachment: fixed;
+            }
+            .stApp [data-testid="stVerticalBlock"] > div {
+                background: rgba(255,255,255,0.65);
+                border-radius: 14px;
+                padding: 12px;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
-with st.sidebar:
-    st.markdown("### 🎨 Tło aplikacji (UI)")
-    bg_mode = st.radio("Wybierz tło strony", ["Brak", "Gradient", "Obraz"], horizontal=True)
-    bg_file = None
-    if bg_mode == "Obraz":
-        bg_file = st.file_uploader("Wgraj tło (JPG/PNG)", type=["jpg", "jpeg", "png"], key="bg_upload_ui")
-
-# zastosuj wybrane tło
-if bg_mode == "Gradient":
-    _set_bg_gradient()
-elif bg_mode == "Obraz" and bg_file is not None:
-    _set_bg_image(bg_file.read())
+# zastosuj tło
+_apply_fixed_bg_from_repo_logo()
 # ==== koniec sekcji TŁO ====
+
 
 st.title("📄 Kosztorys firmy")
 st.caption(register_fonts())
@@ -516,31 +521,55 @@ else:
     nieprzewidziane_mode_key = "manual"
 
 # Pracownicy
+# 4) Pracownicy (indywidualne stawki)
 st.subheader("4) Pracownicy (indywidualne stawki)")
-if "pracownicy_df" not in st.session_state:
-    st.session_state["pracownicy_df"] = pd.DataFrame([{"Imię i nazwisko":"", "Stanowisko":"", "Stawka":0.0, "Waluta":"PLN"}])
 
-b1, b2, _ = st.columns([1,1,6])
+# 1) Inicjalizacja tylko raz
+st.session_state.setdefault(
+    "pracownicy_df",
+    pd.DataFrame([{"row_id": 1, "Imię i nazwisko": "", "Stanowisko": "", "Stawka": 0.0, "Waluta": "PLN"}])
+)
+
+# 2) Akcje przycisków operują na stanie, ale nic nie resetują
+b1, b2, _ = st.columns([1, 1, 6])
 if b1.button("➕ Dodaj pracownika", use_container_width=True):
     df = st.session_state["pracownicy_df"].copy()
-    df.loc[len(df)] = {"Imię i nazwisko":"", "Stanowisko":"", "Stawka":0.0, "Waluta":"PLN"}
+    new_id = (df["row_id"].max() + 1) if not df.empty else 1
+    df.loc[len(df)] = {"row_id": new_id, "Imię i nazwisko": "", "Stanowisko": "", "Stawka": 0.0, "Waluta": "PLN"}
     st.session_state["pracownicy_df"] = df
+
 if b2.button("🗑️ Usuń pustych", use_container_width=True):
-    df = st.session_state["pracownicy_df"]
-    mask_puste = (df["Imię i nazwisko"].fillna("").str.strip()=="") & (df["Stawka"].fillna(0)==0)
+    df = st.session_state["pracownicy_df"].copy()
+    mask_puste = (df["Imię i nazwisko"].fillna("").str.strip() == "") & (df["Stawka"].fillna(0) == 0)
     st.session_state["pracownicy_df"] = df[~mask_puste].reset_index(drop=True)
 
-prac_df = st.data_editor(
-    st.session_state["pracownicy_df"], key="prac_table", num_rows="dynamic", use_container_width=True,
-    column_config={
-        "Imię i nazwisko": st.column_config.TextColumn("Imię i nazwisko"),
-        "Stanowisko": st.column_config.TextColumn("Stanowisko"),
-        "Stawka": st.column_config.NumberColumn("Stawka (za 1 h)", min_value=0.0, step=5.0),
-        "Waluta": st.column_config.SelectboxColumn("Waluta", options=["PLN","EUR"], default="PLN", required=True),
-    }
+# 3) Edytor – ZAWSZE przypisujemy wynik do session_state (bez porównań .equals)
+# 5) Dodatkowe koszta (dowolna liczba pozycji)
+st.subheader("5) Dodatkowe koszta (dowolna liczba pozycji)")
+
+# 1) Inicjalizacja tylko raz
+st.session_state.setdefault(
+    "dodatkowe_df",
+    pd.DataFrame([{"row_id": 1, "Nazwa": "", "Koszt": 0.0}])
 )
-if not prac_df.equals(st.session_state["pracownicy_df"]):
-    st.session_state["pracownicy_df"] = prac_df
+
+# 2) Edytor – ZAWSZE przypisujemy wynik do session_state
+extra_df = st.data_editor(
+    st.session_state["dodatkowe_df"],
+    key="extra_costs",
+    num_rows="dynamic",
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "row_id": st.column_config.NumberColumn("ID", disabled=True),
+        "Nazwa": st.column_config.TextColumn("Nazwa"),
+        "Koszt": st.column_config.NumberColumn(f"Koszt ({waluta_przychodu})", min_value=0.0, step=10.0),
+    },
+    column_order=["row_id", "Nazwa", "Koszt"],
+)
+st.session_state["dodatkowe_df"] = extra_df.copy()
+
+
 
 # Dodatkowe koszta
 st.subheader("5) Dodatkowe koszta (dowolna liczba pozycji)")
