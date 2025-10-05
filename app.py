@@ -445,26 +445,34 @@ paliwo = grid1[1].number_input(f"Paliwo + amortyzacja ({waluta_przychodu})", min
 hotel_dzien = grid1[2].number_input(f"Hotel / dzień ({waluta_przychodu})", min_value=0.0, step=10.0, value=0.0)
 hotele = hotel_dzien * dni_montazu
 
-g2c1, g2c2 = st.columns([1, 1])
-tryb_nieprzew = g2c1.radio(
-    "Koszta nieprzewidziane",
-    ["Suwak (% od przychodu)", "Wpiszę ręcznie"],
-    horizontal=True, index=0
+def render_nieprzewidziane(waluta_przychodu: str, kwota_calkowita: float):
+    c1, c2 = st.columns([1, 1])
+    tryb = c1.radio(
+        "Koszta nieprzewidziane",
+        ["Suwak (% od przychodu)", "Wpiszę ręcznie"],
+        horizontal=True,
+        index=0,
+    )
+
+    if tryb == "Suwak (% od przychodu)":
+        proc = c2.slider(
+            "Koszta nieprzewidziane (% od przychodu)",
+            min_value=0, max_value=100, step=5, value=20
+        )
+        kwota = kwota_calkowita * (proc / 100.0)
+    else:
+        proc = None
+        kwota = c2.number_input(
+            f"Koszta nieprzewidziane ({waluta_przychodu})",
+            min_value=0.0, step=50.0, value=0.0
+        )
+    return tryb, proc, kwota
+
+# --- użycie:
+tryb_nieprzew, nieprzew_proc, nieprzew_kwota = render_nieprzewidziane(
+    waluta_przychodu, kwota_calkowita
 )
 
-if tryb_nieprzew == "Suwak (% od przychodu)":
-    nieprzew_proc = g2c2.slider(
-        "Koszta nieprzewidziane (% od przychodu)",
-        min_value=0, max_value=100, step=5, value=20
-    )
-    nieprzew_kwota = kwota_calkowita * (nieprzew_proc / 100.0)
-else:
-    # w trybie ręcznym procent nie jest używany
-    nieprzew_proc = None
-    nieprzew_kwota = g2c2.number_input(
-        f"Koszta nieprzewidziane ({waluta_przychodu})",
-        min_value=0.0, step=50.0, value=0.0
-    )
 
 
 # ===== 4) PRACOWNICY =====
