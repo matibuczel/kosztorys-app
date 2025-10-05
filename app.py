@@ -61,6 +61,16 @@ def hours_for_montage_days(dni):
     rem = dni % 6
     return weeks * sum(pattern) + sum(pattern[:rem])
 
+def load_logo_file_bytes(path="logo.png"):
+    """Wczytuje domyślne logo z pliku w repo/folderze projektu (jeśli istnieje)."""
+    try:
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                return f.read()
+    except Exception:
+        pass
+    return None
+
 # =========================================================
 #                    Główne obliczenia
 # =========================================================
@@ -69,7 +79,10 @@ def compute_summary(
     waluta_przychodu,
     podatek_proc,
     zus_kwota,
-    nieprzewidziane_proc,          # UWAGA: teraz liczone od PRZYCHODU
+    # NIEPRZEWIDZIANE: dwa tryby
+    nieprzewidziane_mode,          # "percent" albo "manual"
+    nieprzewidziane_proc,          # używane gdy mode == "percent" (od PRZYCHODU)
+    nieprzewidziane_kwota_manual,  # używane gdy mode == "manual"
     paliwo_amort,
     hotel_day_rate,
     dni_montazu,
@@ -95,8 +108,11 @@ def compute_summary(
         for _, row in dodatkowe_df.iterrows():
             dodatkowe_sum += money(row.get("Koszt", 0))
 
-    # >>> ZMIANA: koszta nieprzewidziane liczone od całkowitego PRZYCHODU <<<
-    nieprzewidziane_kwota = (przychod * Decimal(nieprzewidziane_proc) / Decimal(100)).quantize(Decimal("0.01"))
+    # --- Koszta nieprzewidziane ---
+    if nieprzewidziane_mode == "percent":
+        nieprzewidziane_kwota = (przychod * Decimal(nieprzewidziane_proc) / Decimal(100)).quantize(Decimal("0.01"))
+    else:
+        nieprzewidziane_kwota = money(nieprzewidziane_kwota_manual)
 
     koszty_w_przychodzie = (podatek_kwota + zus + paliwo + hotel_total + dodatkowe_sum + nieprzewidziane_kwota)
 
@@ -122,7 +138,7 @@ def compute_summary(
                 "Wynagrodzenie (montaż)": wyn,
             })
 
-    # --- PODSUMOWANIE wg logiki: 10% po pensjach ---
+    # --- PODSUMOWANIE: 10% po pensjach ---
     saldo_po_kosztach = (przychod - koszty_w_przychodzie).quantize(Decimal("0.01"))
     wyn_w_walucie_przych = wynagrodzenia_per_waluta.get(waluta_przychodu, Decimal("0.00"))
     saldo_po_kosztach_i_wyn = (saldo_po_kosztach - wyn_w_walucie_przych).quantize(Decimal("0.01"))
@@ -145,6 +161,7 @@ def compute_summary(
         "hotel_total": hotel_total,
         "dodatkowe_sum": dodatkowe_sum,
 
+        "nieprzewidziane_mode": nieprzewidziane_mode,
         "nieprzewidziane_proc": Decimal(nieprzewidziane_proc),
         "nieprzewidziane_kwota": nieprzewidziane_kwota,
         "koszty_w_przychodzie": koszty_w_przychodzie,
@@ -174,10 +191,11 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.8*cm, rightMargin=1.8*cm, topMargin=2*cm, bottomMargin=1.8*cm)
     elements = []
 
-    # Nagłówek
+    # Nagłówek (domyślnie z logo.png jeśli nie wgrano innego)
+    header_logo = logo_bytes or load_logo_file_bytes()
     header_data = [[Paragraph(f"<b>{meta['nazwa'] or 'Kosztorys'}</b>", styles["H1"]), ""]]
-    if logo_bytes:
-        header_data[0][1] = RLImage(io.BytesIO(logo_bytes), width=3.5*cm, height=3.5*cm)
+    if header_logo:
+        header_data[0][1] = RLImage(io.BytesIO(header_logo), width=3.5*cm, height=3.5*cm)
     header_tbl = Table(header_data, colWidths=[12*cm, 4*cm])
     header_tbl.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"MIDDLE"), ("ALIGN",(1,0),(1,0),"RIGHT")]))
     elements.append(header_tbl)
@@ -210,6 +228,12 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     # Koszty
     elements.append(Spacer(1,4))
     elements.append(Paragraph("Koszty (w walucie przychodu)", styles["H2"]))
+
+    if summary["nieprzewidziane_mode"] == "percent":
+        nieprz_label = f"Koszta nieprzewidziane ({summary['nieprzewidziane_proc']}% od przychodu)"
+    else:
+        nieprz_label = "Koszta nieprzewidziane (kwota ręczna)"
+
     t2_data = [
         ["Pozycja","Kwota"],
         [f"Podatek skarbowy ({summary['podatek_proc']}%)", fmt_money(summary["podatek_kwota"], summary["waluta_przychodu"])],
@@ -217,9 +241,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
         ["Paliwo + amortyzacja", fmt_money(summary["paliwo"], summary["waluta_przychodu"])],
         [f"Hotele: {summary['dni_montazu']} dni × {fmt_money(summary['hotel_day'], summary['waluta_przychodu'])}/dzień",
          fmt_money(summary["hotel_total"], summary["waluta_przychodu"])],
-        # >>> etykieta podkreśla, że liczone od przychodu
-        [f"Koszta nieprzewidziane ({summary['nieprzewidziane_proc']}% od przychodu)",
-         fmt_money(summary["nieprzewidziane_kwota"], summary["waluta_przychodu"])],
+        [nieprz_label, fmt_money(summary["nieprzewidziane_kwota"], summary["waluta_przychodu"])],
         ["Dodatkowe koszta (suma)", fmt_money(summary["dodatkowe_sum"], summary["waluta_przychodu"])],
         ["Razem koszty (waluta przychodu)", fmt_money(summary["koszty_w_przychodzie"], summary["waluta_przychodu"])],
     ]
@@ -319,22 +341,27 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
 
     # watermark + stopka
     def on_page(c, _):
-        # Znak wodny – obraz PNG
-        if watermark_logo_bytes:
+        wm_logo = watermark_logo_bytes or load_logo_file_bytes()
+        if wm_logo:
             c.saveState()
             from reportlab.lib.utils import ImageReader
-            img = ImageReader(io.BytesIO(watermark_logo_bytes))
+            img = ImageReader(io.BytesIO(wm_logo))
             w, h = img.getSize()
             page_w, page_h = A4
             scale = 0.6 * min(page_w / w, page_h / h)
             c.translate(page_w/2, page_h/2)
             c.rotate(30)
-            c.setFillAlpha(0.12)
+            try:
+                c.setFillAlpha(0.12)
+            except Exception:
+                pass
             c.drawImage(img, -w*scale/2, -h*scale/2, w*scale, h*scale, mask='auto')
-            c.setFillAlpha(1.0)
+            try:
+                c.setFillAlpha(1.0)
+            except Exception:
+                pass
             c.restoreState()
 
-        # Znak wodny – tekst
         if watermark_text:
             c.saveState()
             c.setFont(FONT_NAME, 60)
@@ -342,7 +369,6 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
             c.translate(A4[0]/2, A4[1]/2); c.rotate(30)
             c.drawCentredString(0, 0, watermark_text.upper()); c.restoreState()
 
-        # Stopka
         c.saveState()
         c.setFont(FONT_NAME, 8)
         c.setFillColor(colors.grey)
@@ -358,8 +384,8 @@ st.set_page_config(page_title="Kosztorys firmy", page_icon="📄", layout="wide"
 st.title("📄 Kosztorys firmy")
 
 # Czcionka PL
-st.caption("PDF używa wbudowanej polskiej czcionki (Arial). Możesz też wgrać własny plik .ttf.")
-font_upload = st.file_uploader("Opcjonalnie: wgraj czcionkę .ttf z polskimi znakami (np. DejaVuSans.ttf)", type=["ttf"])
+st.caption("PDF używa polskiej czcionki. W chmurze wgraj własny plik .ttf (np. DejaVuSans.ttf), żeby mieć wszystkie polskie znaki.")
+font_upload = st.file_uploader("Opcjonalnie: wgraj czcionkę .ttf z polskimi znakami", type=["ttf"])
 font_info = _try_register_font(r"C:\Windows\Fonts\arial.ttf", font_upload.read() if font_upload else None)
 st.caption(font_info)
 
@@ -377,7 +403,7 @@ st.subheader("2) Przychód i parametry montażu")
 cTop = st.columns([2,1,1,1])
 mode = cTop[0].radio("Sposób podania przychodu", ["Ręcznie", "Z kWp"], horizontal=True)
 waluta_przychodu = cTop[1].selectbox("Waluta przychodu", options=["PLN","EUR"], index=0)
-dni_montazu = cTop[2].number_input("Dni montażu", min_value=0, step=1, value=0, help="Wg harmonogramu: pn-pt 10h, sob 8h, nd wolna.")
+dni_montazu = cTop[2].number_input("Dni montażu", min_value=0, step=1, value=0, help="Wg harmonogramu: pn-pt 10h, sob 8h, niedziela wolna.")
 
 if "kwp_value" not in st.session_state:
     st.session_state.kwp_value = 0.0
@@ -398,16 +424,29 @@ else:
     cK[2].metric("Wyliczony przychód", fmt_money(kwota_calkowita, waluta_przychodu))
     from_kwp = True
 
-# 3) Koszty
+# 3) Koszty (z wyborem trybu nieprzewidzianych)
 st.subheader("3) Koszty (w walucie przychodu)")
 k1,k2,k3 = st.columns(3)
 podatek_proc = k1.number_input("Podatek skarbowy (%)", min_value=0.0, value=5.5, step=0.1)
 zus_kwota = k2.number_input(f"ZUS ({waluta_przychodu})", min_value=0.0, step=50.0)
 paliwo_amort = k3.number_input(f"Paliwo + amortyzacja ({waluta_przychodu})", min_value=0.0, step=50.0)
-k4,k5 = st.columns(2)
-hotel_day_rate = k4.number_input(f"Hotel / dzień ({waluta_przychodu})", min_value=0.0, step=50.0, help="Łączna kwota za wszystkie pokoje / dobę.")
-# >>> ZMIANA: suwak co 5% (0–50), domyślnie 20
-nieprzewidziane_proc = k5.slider("Koszta nieprzewidziane (% od przychodu)", min_value=0, max_value=50, step=5, value=20)
+
+st.markdown("**Koszta nieprzewidziane** — wybierz sposób:")
+m1, m2 = st.columns([1,3])
+nieprzewidziane_mode = m1.radio("Tryb", ["Procent od przychodu", "Kwota ręczna"], horizontal=True)
+
+if nieprzewidziane_mode == "Procent od przychodu":
+    k4,k5 = st.columns(2)
+    hotel_day_rate = k4.number_input(f"Hotel / dzień ({waluta_przychodu})", min_value=0.0, step=50.0, help="Łączna kwota za wszystkie pokoje / dobę.")
+    nieprzewidziane_proc = k5.slider("Koszta nieprzewidziane (% od przychodu)", min_value=0, max_value=50, step=5, value=20)
+    nieprzewidziane_kwota_manual = 0.0
+    nieprzewidziane_mode_key = "percent"
+else:
+    k4,k5 = st.columns(2)
+    hotel_day_rate = k4.number_input(f"Hotel / dzień ({waluta_przychodu})", min_value=0.0, step=50.0, help="Łączna kwota za wszystkie pokoje / dobę.")
+    nieprzewidziane_kwota_manual = k5.number_input(f"Koszta nieprzewidziane — kwota ({waluta_przychodu})", min_value=0.0, step=50.0, value=0.0)
+    nieprzewidziane_proc = 0
+    nieprzewidziane_mode_key = "manual"
 
 # 4) Pracownicy – stabilny edytor
 st.subheader("4) Pracownicy (indywidualne stawki)")
@@ -473,7 +512,9 @@ summary = compute_summary(
     waluta_przychodu=waluta_przychodu,
     podatek_proc=podatek_proc,
     zus_kwota=zus_kwota,
+    nieprzewidziane_mode=nieprzewidziane_mode_key,
     nieprzewidziane_proc=nieprzewidziane_proc,
+    nieprzewidziane_kwota_manual=nieprzewidziane_kwota_manual,
     paliwo_amort=paliwo_amort,
     hotel_day_rate=hotel_day_rate,
     dni_montazu=dni_montazu,
