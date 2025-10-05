@@ -358,44 +358,45 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
 
     # --- Znak wodny + stopka ---
     def on_page(c, _):
-        # domyślnie: jeśli nie wgrano innego logo, użyj logo z nagłówka
-        wm_logo_safe = sanitize_image_bytes(watermark_logo_bytes) if watermark_logo_bytes else header_logo_safe
+    wm_logo_safe = sanitize_image_bytes(watermark_logo_bytes) if watermark_logo_bytes else header_logo_safe
 
-        # obraz znaku wodnego
-        if wm_logo_safe:
-            try:
-                img = ImageReader(io.BytesIO(wm_logo_safe))
-                w, h = img.getSize()
-                page_w, page_h = A4
-                scale = 0.8 * min(page_w / w, page_h / h)  # większy znak wodny
-                c.saveState()
-                c.translate(page_w/2, page_h/2)
-                c.rotate(30)
-                try: c.setFillAlpha(0.20)
-                except Exception: pass
-                c.drawImage(img, -w*scale/2, -h*scale/2, w*scale, h*scale, mask='auto')
-                try: c.setFillAlpha(1.0)
-                except Exception: pass
-                c.restoreState()
-            except Exception:
-                pass
-
-        # tekst znaku wodnego (jeśli nie podano – użyj nazwy lub „KOSZTORYS”)
-        txt = (watermark_text or meta.get("nazwa") or "KOSZTORYS").upper()
-        if txt:
+    # LOGO jako watermark – mniejsze i bardziej przezroczyste
+    if wm_logo_safe:
+        try:
+            img = ImageReader(io.BytesIO(wm_logo_safe))
+            w, h = img.getSize()
+            page_w, page_h = A4
+            scale = 0.6 * min(page_w / w, page_h / h)
             c.saveState()
-            c.setFont(font_bold(), 64)
-            c.setFillColor(colors.Color(0.75,0.75,0.75, alpha=0.22))
-            c.translate(A4[0]/2, A4[1]/2); c.rotate(30)
-            c.drawCentredString(0, 0, txt)
+            c.translate(page_w/2, page_h/2)
+            c.rotate(30)
+            try: c.setFillAlpha(0.12)
+            except Exception: pass
+            c.drawImage(img, -w*scale/2, -h*scale/2, w*scale, h*scale, mask='auto')
+            try: c.setFillAlpha(1.0)
+            except Exception: pass
             c.restoreState()
+        except Exception:
+            pass
 
-        # stopka
+    # TEKST watermarku – rysuj TYLKO jeśli użytkownik wpisał tekst
+    if watermark_text and watermark_text.strip():
+        txt = watermark_text.strip().upper()
         c.saveState()
-        c.setFont(font_regular(), 8)
-        c.setFillColor(colors.grey)
-        footer = f"Projekt: {meta['nr_projektu'] or '-'} • Data: {meta['data'].strftime('%Y-%m-%d')} • Dni montażu: {summary['dni_montazu']}"
-        c.drawString(1.8*cm, 1.2*cm, footer); c.restoreState()
+        c.setFont(font_bold(), 56)
+        c.setFillColor(colors.Color(0.70, 0.70, 0.70, alpha=0.12))
+        c.translate(A4[0]/2, A4[1]/2); c.rotate(30)
+        c.drawCentredString(0, 0, txt)
+        c.restoreState()
+
+    # stopka
+    c.saveState()
+    c.setFont(font_regular(), 8)
+    c.setFillColor(colors.grey)
+    footer = f"Projekt: {meta['nr_projektu'] or '-'} • Data: {meta['data'].strftime('%Y-%m-%d')} • Dni montażu: {summary['dni_montazu']}"
+    c.drawString(1.8*cm, 1.2*cm, footer)
+    c.restoreState()
+
 
     doc.build(elements, onFirstPage=on_page, onLaterPages=on_page)
 
@@ -556,3 +557,4 @@ if st.button("📥 Generuj PDF"):
     )
     buffer.seek(0)
     st.download_button("Pobierz PDF", data=buffer, file_name=pdf_name, mime="application/pdf")
+
