@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import io
+import os
 import base64
 from datetime import date
 from functools import lru_cache
+from typing import Dict
 
 import pandas as pd
 import streamlit as st
 from PIL import Image
+from xml.sax.saxutils import escape as xml_escape
 
-# ===== ReportLab (PDF) =====
+# ===== ReportLab =====
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
@@ -27,128 +30,123 @@ from reportlab.platypus import (
 from reportlab.pdfgen.canvas import Canvas
 
 
-# =========================================================
-# 0) USTAWIENIA / POMOCE
-# =========================================================
+# =============================================================================
+# Ustawienia ogólne
+# =============================================================================
+APP_TITLE = "⚡ Kosztorys firmy"
+FONTS_PATH_REG = "fonts/DejaVuSans.ttf"
+FONTS_PATH_BOLD = "fonts/DejaVuSans-Bold.ttf"
 
-APP_TITLE = "📄 Kosztorys firmy"
-FONTS_PATH = "fonts/DejaVuSans.ttf"  # w repo: fonts/DejaVuSans.ttf
-WEEK_PATTERN = [10, 10, 10, 10, 10, 8, 0]  # Pn..Nd: 10,10,10,10,10,8,0  -> 58 h/tydz
+# Wzór godzin tygodniowych (Pn–So = 10,10,10,10,10,8; Nd=0) → 58h/tydz.
+WEEK_PATTERN = [10, 10, 10, 10, 10, 8, 0]
 WEEK_SUM = sum(WEEK_PATTERN)  # 58
 
 
-def pl_money(x: float) -> str:
-    """Format liczby z przecinkiem dziesiętnym (PL)."""
+def fmt2(x) -> str:
     try:
-        s = f"{float(x):,.2f}"
+        return f"{float(x):,.2f}".replace(",", " ").replace(".", ",")
     except Exception:
-        s = "0.00"
-    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+        return str(x)
 
 
-def read_file_bytes(path: str) -> bytes | None:
+def register_fonts() -> None:
     try:
-        with open(path, "rb") as f:
-            return f.read()
+        pdfmetrics.registerFont(TTFont("DejaVuSans", FONTS_PATH_REG))
+        pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", FONTS_PATH_BOLD))
     except Exception:
-        return None
+        pass  # awaryjnie wyleci na Helvetica (bez PL znaków)
+
+
+def make_styles():
+    ss = getSampleStyleSheet()
+
+    def s(name, **kw):
+        return ParagraphStyle(name, fontName="DejaVuSans", fontSize=10, leading=12, **kw)
+
+    def b(name, **kw):
+        return ParagraphStyle(name, fontName="DejaVuSans-Bold", fontSize=10, leading=12, **kw)
+
+    return {
+        "Base": s("Base"),
+        "H1": ParagraphStyle(
+            "H1",
+            parent=ss["Heading1"],
+            fontName="DejaVuSans-Bold",
+            fontSize=16,
+            leading=18,
+            spaceAfter=6,
+        ),
+        "Heading2": ParagraphStyle(
+            "Heading2",
+            parent=ss["Heading2"],
+            fontName="DejaVuSans-Bold",
+            fontSize=12,
+            leading=14,
+            spaceBefore=8,
+            spaceAfter=4,
+        ),
+        "TableHeader": b("TableHeader"),
+        "Regular": s("Regular"),
+        "Small": ParagraphStyle("Small", fontName="DejaVuSans", fontSize=8, leading=10),
+    }
+
+
+def days_to_hours(days: int, hours_per_day: float | None = None) -> float:
+    if hours_per_day is not None:
+        return float(days) * float(hours_per_day)
+    return float(days) * (WEEK_SUM / 6)  # ~9.67h/dzień
 
 
 @lru_cache(maxsize=1)
 def load_local_logo_bytes() -> bytes | None:
-    """Logo z repo: logo.png / .jpg."""
-    for p in ["logo.png", "logo.jpg", "logo.jpeg", "Logo.png", "Logo.jpg"]:
-        b = read_file_bytes(p)
-        if b:
-            return b
+    for fname in ("logo.png", "logo.jpg", "logo.jpeg"):
+        if os.path.exists(fname):
+            with open(fname, "rb") as f:
+                return f.read()
     return None
 
 
 def sanitize_image_bytes(img_bytes: bytes | None) -> bytes | None:
-    """Bezpiecznie konwertuje na PNG (dla PDF i CSS)."""
     if not img_bytes:
         return None
     try:
         im = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
-        buf = io.BytesIO()
-        im.save(buf, format="PNG")
-        return buf.getvalue()
+        out = io.BytesIO()
+        im.save(out, format="PNG", optimize=True)
+        return out.getvalue()
     except Exception:
-        return None
+        return img_bytes
 
 
-def compute_total_hours(days: int) -> int:
-    """Liczy łączną liczbę godzin wg wzorca (Pn–Pt 10h, So 8h, Nd 0)."""
-    if days <= 0:
-        return 0
-    full_weeks = days // 7
-    rem = days % 7
-    return full_weeks * WEEK_SUM + sum(WEEK_PATTERN[:rem])
-
-
-# =========================================================
-# 1) PDF – FONT i STYLE
-# =========================================================
-def register_fonts() -> str:
-    """Rejestruje font DejaVu dla PL znaków."""
-    try:
-        if not any(f == "DejaVu" for f in pdfmetrics.getRegisteredFontNames()):
-            pdfmetrics.registerFont(TTFont("DejaVu", FONTS_PATH))
-    except Exception:
-        # Jeśli brak pliku – ReportLab użyje bazowych, ale PL znaki mogą nie zadziałać
-        pass
-    return "DejaVu"
-
-
-def make_styles() -> dict[str, ParagraphStyle]:
-    base = getSampleStyleSheet()
-    font_name = register_fonts() or "Helvetica"
-    styles = {
-        "H1": ParagraphStyle(
-            "H1", parent=base["Heading1"], fontName=font_name, fontSize=16, leading=20
-        ),
-        "H2": ParagraphStyle(
-            "H2", parent=base["Heading2"], fontName=font_name, fontSize=12, leading=16
-        ),
-        "Body": ParagraphStyle(
-            "Body", parent=base["BodyText"], fontName=font_name, fontSize=9, leading=12
-        ),
-        "Small": ParagraphStyle(
-            "Small", parent=base["BodyText"], fontName=font_name, fontSize=8, leading=10
-        ),
-        "Header": ParagraphStyle(
-            "Header", parent=base["BodyText"], fontName=font_name, fontSize=10, leading=12
-        ),
-    }
-    return styles
-
-
-# =========================================================
-# 2) PDF – RYSOWANIE ZNAKU WODNEGO I STOPKI
-# =========================================================
-def make_on_page(wm_logo_bytes: bytes | None, meta: dict, styles: dict):
-    """Zwraca funkcję rysującą watermark + nagłówek/stopkę."""
-    wm_safe = sanitize_image_bytes(wm_logo_bytes) or sanitize_image_bytes(load_local_logo_bytes())
+def make_on_page(watermark_logo_bytes: bytes | None):
+    wm_logo_safe = sanitize_image_bytes(watermark_logo_bytes or load_local_logo_bytes())
 
     def _on_page(c: Canvas, doc):
-        # Watermark – tylko obraz (bez tekstu)
-        if wm_safe:
+        # znak wodny — tylko logo, bez tekstu
+        if wm_logo_safe:
             try:
-                from reportlab.lib.utils import ImageReader
+                from reportlab.platypus import Image as RLImage
 
-                img = ImageReader(io.BytesIO(wm_safe))
-                w, h = img.getSize()
+                img = RLImage(io.BytesIO(wm_logo_safe))
+                w, h = img.imageWidth, img.imageHeight
                 page_w, page_h = A4
-                # lekko większy znak wodny
-                scale = 0.85 * min(page_w / w, page_h / h)
+                scale = 0.9 * min(page_w / w, page_h / h)
+
                 c.saveState()
                 c.translate(page_w / 2, page_h / 2)
-                c.rotate(0)
+                c.rotate(30)
                 try:
-                    c.setFillAlpha(0.06)  # delikatnie
+                    c.setFillAlpha(0.10)  # delikatnie
                 except Exception:
                     pass
-                c.drawImage(img, -w * scale / 2, -h * scale / 2, w * scale, h * scale, mask="auto")
+                c.drawImage(
+                    io.BytesIO(wm_logo_safe),
+                    -w * scale / 2,
+                    -h * scale / 2,
+                    w * scale,
+                    h * scale,
+                    mask="auto",
+                )
                 try:
                     c.setFillAlpha(1.0)
                 except Exception:
@@ -157,19 +155,19 @@ def make_on_page(wm_logo_bytes: bytes | None, meta: dict, styles: dict):
             except Exception:
                 pass
 
-        # Stopka: numer projektu / data / dni
+        # stopka
         c.saveState()
-        c.setFont(register_fonts() or "Helvetica", 8)
-        footer = f"Projekt: {meta.get('nr_projektu') or '-'} • Data: {meta['data'].strftime('%Y-%m-%d')} • Dni montażu: {meta['dni_montazu']}"
-        c.drawString(1.8 * cm, 1.2 * cm, footer)
+        c.setFont("DejaVuSans", 8)
+        meta_txt = getattr(doc, "_footer_meta", "")
+        c.drawString(1.6 * cm, 1.2 * cm, meta_txt)
         c.restoreState()
 
     return _on_page
 
 
-# =========================================================
-# 3) PDF – BUDOWANIE DOKUMENTU
-# =========================================================
+# =============================================================================
+# Budowanie PDF (bez logo w nagłówku – wygląd jak wcześniej)
+# =============================================================================
 def build_pdf(
     meta: dict,
     koszty: dict,
@@ -192,453 +190,438 @@ def build_pdf(
 
     elements: list = []
 
-    # Nagłówek
-    header_data = [
-        [
-            Paragraph(f"<b>{meta.get('nazwa') or 'Kosztorys'}</b>", styles["H1"]),
-            "",
-        ]
-    ]
-    t = Table(header_data, colWidths=[12 * cm, 5 * cm])
-    t.setStyle(
-        TableStyle(
-            [
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ]
-        )
-    )
-    elements += [t, Spacer(1, 6)]
+    # --- Tytuł (bez HTML, safe) ---
+    title_text = xml_escape(str(meta.get("nazwa") or "Kosztorys"))
+    elements += [Paragraph(title_text, styles["H1"]), Spacer(1, 6)]
 
-    # Dane projektu
+    # --- Dane projektu ---
     dane_proj = [
-        ["Projekt:", meta.get("nazwa") or "-"],
-        ["Nr projektu:", meta.get("nr_projektu") or "-"],
-        ["Data:", meta["data"].strftime("%Y-%m-%d")],
-        ["Dni montażu:", str(meta["dni_montazu"])],
+        ["Projekt", xml_escape(meta.get("nr_projektu") or "—")],
+        ["Data", meta.get("data").strftime("%Y-%m-%d") if meta.get("data") else "—"],
+        ["Dni montażu", meta.get("dni_montazu") or 0],
     ]
-    tp = Table(dane_proj, colWidths=[4 * cm, 12 * cm])
-    tp.setStyle(
+    tab = Table(dane_proj, colWidths=[4 * cm, 13 * cm])
+    tab.setStyle(
         TableStyle(
             [
-                ("FONTNAME", (0, 0), (-1, -1), register_fonts() or "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
-                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                ("BOX", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+                ("BACKGROUND", (0, 0), (0, -1), colors.Color(0.95, 0.95, 0.95)),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.Color(0.85, 0.85, 0.85)),
+                ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
             ]
         )
     )
-    elements += [tp, Spacer(1, 10)]
+    elements += [tab, Spacer(1, 8)]
 
-    # Koszty – tabela główna
-    elements.append(Paragraph("Koszty (w walucie przychodu)", styles["H2"]))
+    # --- Koszty (w walucie przychodu) ---
+    elements += [Paragraph("Koszty (w walucie przychodu)", styles["Heading2"])]
 
-    koszt_rows = [
+    koszty_rows = [
         ["Pozycja", "Kwota"],
-        [f"Podatek skarbowy (5,5%)", f"{pl_money(koszty['podatek'])} {koszty['waluta']}"],
-        ["ZUS", f"{pl_money(koszty['zus'])} {koszty['waluta']}"],
-        ["Paliwo + amortyzacja", f"{pl_money(koszty['paliwo'])} {koszty['waluta']}"],
+        ["Podatek skarbowy (5.5%)", f"{fmt2(koszty['podatek'])} {koszty['waluta_przychodu']}"],
+        ["ZUS", f"{fmt2(koszty['zus'])} {koszty['waluta_przychodu']}"],
+        ["Paliwo + amortyzacja", f"{fmt2(koszty['paliwo'])} {koszty['waluta_przychodu']}"],
         [
-            f"Hotele: {meta['dni_montazu']} dni × {pl_money(koszty['hotel_dzien'])} {koszty['waluta']}/dzień",
-            f"{pl_money(koszty['hotele'])} {koszty['waluta']}",
+            f"Hotele: {meta.get('dni_montazu',0)} dni × {fmt2(koszty['hotel_dzien'])} {koszty['waluta_przychodu']}/dzień",
+            f"{fmt2(koszty['hotele'])} {koszty['waluta_przychodu']}",
         ],
         [
-            f"Koszta nieprzewidziane ({koszty['nieprzewidziane_proc']}% od przychodu)",
-            f"{pl_money(koszty['nieprzewidziane_kwota'])} {koszty['waluta']}",
+            f"Koszta nieprzewidziane ({int(koszty['nieprzewidziane_proc'])}% od przychodu)",
+            f"{fmt2(koszty['nieprzewidziane_kwota'])} {koszty['waluta_przychodu']}",
         ],
-        [
-            "Dodatkowe koszta (suma)",
-            f"{pl_money(koszty['dodatkowe_suma'])} {koszty['waluta']}",
-        ],
-        ["Razem koszty (waluta przychodu)", f"{pl_money(koszty['koszty_razem'])} {koszty['waluta']}"],
+        ["Dodatkowe koszta (suma)", f"{fmt2(koszty['dodatkowe_suma'])} {koszty['waluta_przychodu']}"],
+        ["Razem koszty (waluta przychodu)", f"{fmt2(koszty['razem_koszty'])} {koszty['waluta_przychodu']}"],
     ]
-    tk = Table(koszt_rows, colWidths=[12 * cm, 5 * cm])
-    tk.setStyle(
+
+    koszty_t = Table(koszty_rows, colWidths=[12 * cm, 5 * cm])
+    koszty_t.setStyle(
         TableStyle(
             [
-                ("FONTNAME", (0, 0), (-1, -1), register_fonts() or "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
-                ("BOX", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.92, 0.92, 0.92)),
+                ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.Color(0.85, 0.85, 0.85)),
+                ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
             ]
         )
     )
-    elements += [tk, Spacer(1, 12)]
+    elements += [koszty_t, Spacer(1, 8)]
 
-    # Pracownicy
-    elements.append(Paragraph("Pracownicy (wynagrodzenia za cały montaż)", styles["H2"]))
+    # --- Pracownicy (z sumą per waluta) ---
+    elements += [Paragraph("Pracownicy (wynagrodzenia za cały montaż)", styles["Heading2"])]
 
-    emp_rows = [
+    pr_df = pracownicy_df.copy()
+    for col in ["Dni", "Godz. łącznie", "Stawka"]:
+        if col not in pr_df.columns:
+            pr_df[col] = 0.0
+    if "Wynagrodzenie" not in pr_df.columns:
+        pr_df["Wynagrodzenie"] = pr_df["Godz. łącznie"].astype(float) * pr_df["Stawka"].astype(float)
+
+    table_data = [
         ["Imię i nazwisko", "Stanowisko", "Dni", "Godz. łącznie", "Stawka", "Waluta", "Wynagrodzenie"]
     ]
-    for _, r in pracownicy_df.iterrows():
-        name = r.get("Imię i nazwisko", "")
-        pos = r.get("Stanowisko", "")
-        rate = float(r.get("Stawka", 0) or 0)
-        wal = r.get("Waluta", "PLN") or "PLN"
-        hrs = koszty["godz_lacznie"]
-        wyn = rate * hrs
-        emp_rows.append(
+    for _, r in pr_df.iterrows():
+        table_data.append(
             [
-                name,
-                pos,
-                str(meta["dni_montazu"]),
-                f"{hrs}",
-                f"{pl_money(rate)}",
-                wal,
-                f"{pl_money(wyn)} {wal}",
+                xml_escape(str(r.get("Imię i nazwisko", ""))),
+                xml_escape(str(r.get("Stanowisko", ""))),
+                int(r.get("Dni", 0)),
+                fmt2(r.get("Godz. łącznie", 0)),
+                fmt2(r.get("Stawka", 0)),
+                xml_escape(str(r.get("Waluta", ""))),
+                fmt2(r.get("Wynagrodzenie", 0)),
             ]
         )
 
-    te = Table(emp_rows, colWidths=[5.0 * cm, 3.2 * cm, 1.5 * cm, 2.2 * cm, 2.2 * cm, 1.5 * cm, 1.9 * cm])
-    te.setStyle(
-        TableStyle(
-            [
-                ("FONTNAME", (0, 0), (-1, -1), register_fonts() or "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
-                ("BOX", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-            ]
-        )
-    )
-    elements += [te, Spacer(1, 10)]
+    sums_by_curr = pr_df.groupby("Waluta", dropna=False)["Wynagrodzenie"].sum().to_dict()
+    if sums_by_curr:
+        table_data.append(["", "", "", "", "", "", ""])
+        for cur, s in sums_by_curr.items():
+            table_data.append(["", "", "", "", "", xml_escape(str(cur or "")), fmt2(s)])
 
-    # Dodatkowe koszta – lista
-    if not dodatkowe_df.empty:
-        elements.append(Paragraph("Dodatkowe koszta (pozycje)", styles["H2"]))
-        rows = [["Nazwa", f"Kwota ({koszty['waluta']})"]]
-        for _, r in dodatkowe_df.iterrows():
-            if (str(r.get("Nazwa", "")).strip()) or float(r.get("Koszt", 0) or 0) > 0:
-                rows.append([str(r.get("Nazwa", "")).strip(), pl_money(float(r.get("Koszt", 0) or 0))])
-
-        td = Table(rows, colWidths=[12 * cm, 5 * cm])
-        td.setStyle(
-            TableStyle(
-                [
-                    ("FONTNAME", (0, 0), (-1, -1), register_fonts() or "Helvetica"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                    ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
-                    ("BOX", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                    ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ]
-            )
-        )
-        elements += [td, Spacer(1, 10)]
-
-    # Podsumowanie
-    elements.append(Paragraph("Podsumowanie (waluta przychodu)", styles["H2"]))
-    rows_sum = [
-        ["Saldo po kosztach (bez wynagrodzeń)", f"{pl_money(koszty['saldo_po_kosztach'])} {koszty['waluta']}"],
-        [f"– Wynagrodzenia w PLN", f"{pl_money(koszty['wyn_pln'])} PLN"],
-        [f"– Wynagrodzenia w EUR", f"{pl_money(koszty['wyn_eur'])} EUR"],
-        ["Pieniądze firmy (10%) — po wynagrodzeniach", f"{pl_money(koszty['pieniadze_firmy'])} {koszty['waluta']}"],
-        ["Kwota końcowa", f"{pl_money(koszty['kwota_koncowa'])} {koszty['waluta']}"],
+    avail = A4[0] - doc.leftMargin - doc.rightMargin
+    colWidths = [
+        0.30 * avail,  # Imię i nazwisko
+        0.20 * avail,  # Stanowisko
+        0.07 * avail,  # Dni
+        0.12 * avail,  # Godz. łącznie
+        0.12 * avail,  # Stawka
+        0.07 * avail,  # Waluta
+        0.12 * avail,  # Wynagrodzenie
     ]
-    ts = Table(rows_sum, colWidths=[12 * cm, 5 * cm])
-    ts.setStyle(
+    prac_t = Table(table_data, colWidths=colWidths, repeatRows=1)
+    prac_t.setStyle(
         TableStyle(
             [
-                ("FONTNAME", (0, 0), (-1, -1), register_fonts() or "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("BACKGROUND", (0, 0), (-1, -1), colors.whitesmoke),
-                ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
-                ("BOX", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.92, 0.92, 0.92)),
+                ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.Color(0.85, 0.85, 0.85)),
+                ("ALIGN", (2, 1), (2, -1), "CENTER"),
+                ("ALIGN", (3, 1), (3, -1), "RIGHT"),
+                ("ALIGN", (4, 1), (4, -1), "RIGHT"),
+                ("ALIGN", (5, 1), (5, -1), "CENTER"),
+                ("ALIGN", (6, 1), (6, -1), "RIGHT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
             ]
         )
     )
-    elements += [ts, Spacer(1, 10)]
+    elements += [prac_t, Spacer(1, 8)]
 
-    # Uwagi
-    if str(meta.get("uwagi", "")).strip():
-        elements.append(Paragraph("Uwagi", styles["H2"]))
-        elements.append(Paragraph(str(meta["uwagi"]), styles["Body"]))
+    # --- Dodatkowe koszta ---
+    elements += [Paragraph("Dodatkowe koszta (pozycje)", styles["Heading2"])]
+    dd_rows = [["Nazwa", f"Kwota ({koszty['waluta_przychodu']})"]]
+    for _, r in dodatkowe_df.iterrows():
+        kw = float(r.get("Kwota", 0.0))
+        if kw:
+            dd_rows.append([xml_escape(str(r.get("Nazwa", ""))), fmt2(kw)])
+    if len(dd_rows) == 1:
+        dd_rows.append(["—", "0,00"])
 
-    # Build
-    on_page = make_on_page(watermark_logo_bytes, meta, styles)
+    dd_t = Table(dd_rows, colWidths=[12 * cm, 5 * cm])
+    dd_t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.92, 0.92, 0.92)),
+                ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.Color(0.85, 0.85, 0.85)),
+                ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ]
+        )
+    )
+    elements += [dd_t, Spacer(1, 8)]
+
+    # --- Podsumowanie ---
+    elements += [Paragraph("Podsumowanie (waluta przychodu)", styles["Heading2"])]
+    podsum = [
+        ["Saldo po kosztach (bez wynagrodzeń)", f"{fmt2(koszty['saldo_po_kosztach'])} {koszty['waluta_przychodu']}"],
+        [
+            "– Wynagrodzenia (łącznie, przeliczone do waluty przychodu)",
+            f"{fmt2(koszty['wynagrodzenia_w_przychodzie'])} {koszty['waluta_przychodu']}",
+        ],
+        [f"Pieniądze firmy (10%) — po wynagrodzeniach", f"{fmt2(koszty['pieniadze_firmy'])} {koszty['waluta_przychodu']}"],
+        ["Kwota końcowa", f"{fmt2(koszty['kwota_koncowa'])} {koszty['waluta_przychodu']}"],
+    ]
+    pod_t = Table(podsum, colWidths=[12 * cm, 5 * cm])
+    pod_t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.95, 0.95, 0.95)),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.Color(0.85, 0.85, 0.85)),
+                ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
+                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ]
+        )
+    )
+    elements += [pod_t]
+
+    # stopka
+    doc._footer_meta = f"Projekt: {meta.get('nr_projektu') or '-'} • Data: {meta.get('data').strftime('%Y-%m-%d') if meta.get('data') else '-'} • Dni montażu: {meta.get('dni_montazu') or 0}"
+
+    on_page = make_on_page(watermark_logo_bytes)
     doc.build(elements, onFirstPage=on_page, onLaterPages=on_page)
 
     return buf.getvalue()
 
 
-# =========================================================
-# 4) UI – TŁO (tylko przeglądarka, NIE PDF)
-# =========================================================
-def apply_fixed_bg_from_repo_logo():
-    logo_bytes = sanitize_image_bytes(load_local_logo_bytes())
-    if logo_bytes:
-        b64 = base64.b64encode(logo_bytes).decode("utf-8")
-        css = f"""
-        <style>
-        .stApp {{
-            background:
-                linear-gradient(rgba(255,255,255,0.85), rgba(255,255,255,0.85)),
-                url("data:image/png;base64,{b64}") no-repeat center center fixed !important;
-            background-size: cover !important;
-        }}
-        /* delikatne „karty” pod treścią – jasnoszare */
-        .stApp [data-testid="stVerticalBlock"] > div {{
-            background: rgba(242,244,247,0.85);
-            border: 1px solid #e6e8eb;
-            border-radius: 14px;
-            padding: 14px;
-            box-shadow: 0 1px 2px rgba(16,24,40,.04);
-        }}
-        thead tr {{
-            background-color: #f5f6f8 !important;
-        }}
-        </style>
-        """
-        st.markdown(css, unsafe_allow_html=True)
-    else:
+# =============================================================================
+# UI – Streamlit
+# =============================================================================
+
+def _set_bg_with_logo():
+    """Bardzo jasne tło (logo) tylko w UI; PDF na to nie patrzy."""
+    try:
+        b = load_local_logo_bytes()
+        if not b:
+            return
+        encoded = base64.b64encode(b).decode("utf-8")
         st.markdown(
-            """
+            f"""
             <style>
-            .stApp {
-                background: linear-gradient(135deg, #f7f9fc 0%, #eef4ff 50%, #f7f9fc 100%) !important;
-                background-attachment: fixed;
-            }
-            .stApp [data-testid="stVerticalBlock"] > div {
-                background: rgba(242,244,247,0.85);
-                border: 1px solid #e6e8eb;
-                border-radius: 14px;
-                padding: 14px;
-                box-shadow: 0 1px 2px rgba(16,24,40,.04);
-            }
+            /* Delikatny znak wodny w tle UI */
+            .stApp::before {{
+              content: "";
+              position: fixed;
+              inset: 0;
+              background: url("data:image/png;base64,{encoded}") no-repeat 50% 30% / 55%;
+              opacity: .05; /* JAŚNIEJSZE niż wcześniej */
+              pointer-events: none;
+              z-index: 0;
+            }}
+            /* odrobinę jaśniejsze kontenery */
+            .block-container {{
+              z-index: 1;
+            }}
             </style>
             """,
             unsafe_allow_html=True,
         )
+    except Exception:
+        pass
 
 
-# =========================================================
-# 5) UI – STREAMLIT
-# =========================================================
-st.set_page_config(page_title="Kosztorys firmy", page_icon="📄", layout="wide")
-apply_fixed_bg_from_repo_logo()
-st.title(APP_TITLE)
-st.caption(register_fonts())  # rejestruj font dla PL znaków
+def _init_state():
+    if "employees" not in st.session_state:
+        st.session_state.employees = pd.DataFrame(
+            [
+                {"Imię i nazwisko": "", "Stanowisko": "", "Dni": 0, "Godz. łącznie": 0.0, "Stawka": 0.0, "Waluta": "EUR", "Wynagrodzenie": 0.0}
+            ]
+        )
+    if "extra_costs" not in st.session_state:
+        st.session_state.extra_costs = pd.DataFrame([{"Nazwa": "", "Kwota": 0.0}])
 
 
-# --------- METADANE -----------
+def _recalc_employees(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["Dni"] = pd.to_numeric(df.get("Dni", 0), errors="coerce").fillna(0).astype(int)
+    df["Godz. łącznie"] = pd.to_numeric(df.get("Godz. łącznie", 0.0), errors="coerce").fillna(0.0).astype(float)
+    df["Stawka"] = pd.to_numeric(df.get("Stawka", 0.0), errors="coerce").fillna(0.0).astype(float)
+    mask = (df["Godz. łącznie"] <= 0.0) & (df["Dni"] > 0)
+    df.loc[mask, "Godz. łącznie"] = df.loc[mask, "Dni"].apply(lambda d: days_to_hours(d, None))
+    df["Wynagrodzenie"] = df["Godz. łącznie"] * df["Stawka"]
+    df["Waluta"] = df.get("Waluta", "EUR").fillna("EUR").astype(str)
+    return df
+
+
+def _extra_costs_sum(df: pd.DataFrame) -> float:
+    return pd.to_numeric(df.get("Kwota", 0.0), errors="coerce").fillna(0.0).sum()
+
+
+def _sum_wages_by_currency(df: pd.DataFrame) -> Dict[str, float]:
+    return df.groupby("Waluta", dropna=False)["Wynagrodzenie"].sum().to_dict()
+
+
+# ----------------------------- UI START -----------------------------
+st.set_page_config(page_title=APP_TITLE, page_icon="⚡", layout="wide")
+_set_bg_with_logo()
+register_fonts()
+_init_state()
+
+st.title("Kosztorys firmy")
+
+# Metadane
 st.subheader("1) Metadane projektu")
-c1, c2, c3 = st.columns([1.5, 1, 1])
-nazwa = c1.text_input("Nazwa kosztorysu / projektu", placeholder="Nazwa")
-data_d = c2.date_input("Data", value=date.today(), format="YYYY-MM-DD")
-nr_projektu = c3.text_input("Numer projektu", placeholder="NP-2025-001")
-uwagi = st.text_area("Uwagi (opcjonalnie)", placeholder="Notatki, ustalenia, itp.")
+c1, c2, c3 = st.columns((1.3, 1, 0.9))
+with c1:
+    nazwa = st.text_input("Nazwa kosztorysu / projektu", placeholder="Nazwa")
+with c2:
+    data_doc = st.date_input("Data", value=date.today(), format="YYYY-MM-DD")
+with c3:
+    nr_projektu = st.text_input("Nr projektu", placeholder="NP-2025-001")
 
-
-# --------- PRZYCHÓD -----------
+# Przychód
 st.subheader("2) Przychód i parametry montażu")
-c1, c2, c3 = st.columns([1, 1, 1])
-dni_montazu = c1.number_input("Dni montażu", min_value=0, step=1, value=0)
-waluta_przychodu = c2.selectbox("Waluta przychodu", options=["PLN", "EUR"], index=0)
-sposob = c3.radio("Sposób podania przychodu", ["Ręcznie", "Z mocy (kWp × stawka/kWp)"], horizontal=True)
+c1, c2, c3 = st.columns((1, 1, 1))
+with c1:
+    tryb_przychodu = st.radio("Źródło przychodu", ["Wpisz ręcznie", "Z kWp × stawka"], horizontal=True, index=0)
+with c2:
+    waluta_przychodu = st.selectbox("Waluta przychodu", ["EUR", "PLN"], index=0)
+with c3:
+    dni_montazu = st.number_input("Dni montażu", min_value=0, value=0, step=1)
 
-if sposob == "Ręcznie":
-    kwota_calkowita = st.number_input(f"Kwota całkowita ({waluta_przychodu})", min_value=0.0, step=100.0, value=0.0)
+c1, c2, c3 = st.columns((1, 1, 1))
+if tryb_przychodu == "Wpisz ręcznie":
+    with c1:
+        kwota_calkowita = st.number_input(f"Kwota całkowita ({waluta_przychodu})", min_value=0.0, value=0.0, step=100.0)
+    kWp = st.session_state.get("kWp", 0.0)
+    cena_kWp = st.session_state.get("cena_kWp", 0.0)
 else:
-    cc1, cc2 = st.columns([1, 1])
-    kWp = cc1.number_input("Moc instalacji (kWp)", min_value=0.0, step=0.1, value=0.0)
-    stawka_kWp = cc2.number_input(f"Stawka za 1 kWp ({waluta_przychodu})", min_value=0.0, step=100.0, value=0.0)
-    kwota_calkowita = kWp * stawka_kWp
+    with c1:
+        kWp = st.number_input("Ilość kWp", min_value=0.0, value=0.0, step=1.0)
+    with c2:
+        cena_kWp = st.number_input(f"Kwota za 1 kWp ({waluta_przychodu})", min_value=0.0, value=0.0, step=10.0)
+    kwota_calkowita = kWp * cena_kWp
 
-st.markdown(f"**Przychód:** {pl_money(kwota_calkowita)} {waluta_przychodu}")
+# Koszty podstawowe
+st.subheader("3) Koszty podstawowe")
+c1, c2, c3 = st.columns((1, 1, 1))
+with c1:
+    zus = st.number_input(f"ZUS ({waluta_przychodu})", min_value=0.0, value=0.0, step=50.0)
+with c2:
+    paliwo = st.number_input(f"Paliwo + amortyzacja ({waluta_przychodu})", min_value=0.0, value=0.0, step=50.0)
+with c3:
+    hotel_dzien = st.number_input(f"Hotel / dzień ({waluta_przychodu})", min_value=0.0, value=0.0, step=10.0)
 
+c1, c2 = st.columns((1, 1))
+with c1:
+    nieprzewidziane_proc = st.slider("Koszta nieprzewidziane (% od przychodu)", 0, 50, 20, step=5)
+with c2:
+    nieprzewidziane_proc = st.number_input("lub wpisz własny procent", min_value=0, max_value=100, value=int(nieprzewidziane_proc), step=1)
 
-# --------- KOSZTY -----------
-st.subheader("3) Koszty w walucie przychodu")
-
-grid1 = st.columns([1, 1, 1])
-podatek = 0.055 * kwota_calkowita  # 5.5%
-zus = grid1[0].number_input(f"ZUS ({waluta_przychodu})", min_value=0.0, step=50.0, value=0.0)
-paliwo = grid1[1].number_input(f"Paliwo + amortyzacja ({waluta_przychodu})", min_value=0.0, step=50.0, value=0.0)
-
-hotel_dzien = grid1[2].number_input(f"Hotel / dzień ({waluta_przychodu})", min_value=0.0, step=10.0, value=0.0)
-hotele = hotel_dzien * dni_montazu
-
-g2c1, g2c2 = st.columns([1, 1])
-tryb_nieprzew = g2c1.radio("Koszta nieprzewidziane", ["Suwak (% od przychodu)", "Wpiszę ręcznie"], horizontal=True, index=0)
-if tryb_nieprzew == "Suwak (% od przychodu)":
-    nieprzew_proc = g2c2.slider("Koszta nieprzewidziane (% od przychodu)", min_value=0, max_value=100, step=5, value=20)
-    nieprzew_kwota = kwota_calkowita * (nieprzew_proc / 100.0)
-else:
-    nieprzew_proc = 0
-    nieprzew_kwota = g2c2.number_input(f"Koszta nieprzewidziane ({waluta_przychodu})", min_value=0.0, step=50.0, value=0.0)
-
-# ===== 4) PRACOWNICY =====
+# Pracownicy
 st.subheader("4) Pracownicy (indywidualne stawki)")
+cbtn1, cbtn2 = st.columns((0.22, 0.28))
+with cbtn1:
+    if st.button("➕ Dodaj pracownika", use_container_width=True):
+        st.session_state.employees = pd.concat(
+            [
+                st.session_state.employees,
+                pd.DataFrame([{"Imię i nazwisko": "", "Stanowisko": "", "Dni": 0, "Godz. łącznie": 0.0, "Stawka": 0.0, "Waluta": "EUR", "Wynagrodzenie": 0.0}]),
+            ],
+            ignore_index=True,
+        )
+with cbtn2:
+    if st.button("🗑️ Usuń puste wiersze", use_container_width=True):
+        df = st.session_state.employees
+        mask = (
+            df[["Imię i nazwisko", "Stanowisko"]].fillna("").apply(lambda r: "".join(r), axis=1).str.strip().astype(bool)
+            | (pd.to_numeric(df.get("Dni", 0), errors="coerce").fillna(0) > 0)
+            | (pd.to_numeric(df.get("Godz. łącznie", 0), errors="coerce").fillna(0) > 0)
+            | (pd.to_numeric(df.get("Stawka", 0), errors="coerce").fillna(0) > 0)
+        )
+        st.session_state.employees = df[mask].reset_index(drop=True)
 
-# Inicjalizacja stanu – bez pustego wiersza
-if "pracownicy_df" not in st.session_state:
-    st.session_state["pracownicy_df"] = pd.DataFrame(
-        columns=["row_id", "Imię i nazwisko", "Stanowisko", "Stawka", "Waluta"]
-    )
-
-def _add_worker():
-    df = st.session_state["pracownicy_df"].copy()
-    new_id = int(df["row_id"].max()) + 1 if not df.empty else 1
-    new_row = {"row_id": new_id, "Imię i nazwisko": "", "Stanowisko": "", "Stawka": 0.0, "Waluta": "PLN"}
-    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-    st.session_state["pracownicy_df"] = df
-
-def _drop_empty_workers():
-    df = st.session_state["pracownicy_df"].copy()
-    mask = (df["Imię i nazwisko"].fillna("").str.strip() == "") & (df["Stawka"].fillna(0) == 0)
-    st.session_state["pracownicy_df"] = df[~mask].reset_index(drop=True)
-
-pw1, pw2, _ = st.columns([1, 1, 6])
-pw1.button("➕ Dodaj pracownika", use_container_width=True, on_click=_add_worker)
-pw2.button("🗑️ Usuń pustych", use_container_width=True, on_click=_drop_empty_workers)
-
-prac_df = st.data_editor(
-    st.session_state["pracownicy_df"],
-    key="workers_editor",
+emp_df = st.data_editor(
+    st.session_state.employees,
+    key="employees_editor",
     num_rows="dynamic",
     use_container_width=True,
     hide_index=True,
-    column_config={
-        "row_id": st.column_config.NumberColumn("ID", disabled=True),
-        "Imię i nazwisko": st.column_config.TextColumn("Imię i nazwisko"),
-        "Stanowisko": st.column_config.TextColumn("Stanowisko"),
-        "Stawka": st.column_config.NumberColumn("Stawka (za 1 h)", min_value=0.0, step=5.0),
-        "Waluta": st.column_config.SelectboxColumn("Waluta", options=["PLN", "EUR"], default="PLN", required=True),
-    },
-    column_order=["row_id", "Imię i nazwisko", "Stanowisko", "Stawka", "Waluta"],
 )
-st.session_state["pracownicy_df"] = prac_df.copy()
+emp_df = _recalc_employees(emp_df)
+st.session_state.employees = emp_df
 
-# Godziny łącznie wg dni montażu
-godz_lacznie = compute_total_hours(int(dni_montazu))
+sums_wages = _sum_wages_by_currency(emp_df)
+if sums_wages:
+    st.caption("**Suma wynagrodzeń (per waluta):** " + " • ".join(f"{cur}: {fmt2(val)}" for cur, val in sums_wages.items()))
 
-# Sumy wynagrodzeń wg waluty pracownika
-wyn_pln = 0.0
-wyn_eur = 0.0
-if not st.session_state["pracownicy_df"].empty and godz_lacznie > 0:
-    for _, r in st.session_state["pracownicy_df"].iterrows():
-        rate = float(r.get("Stawka", 0) or 0)
-        wal = r.get("Waluta", "PLN") or "PLN"
-        wyn = rate * godz_lacznie
-        if wal == "PLN":
-            wyn_pln += wyn
-        else:
-            wyn_eur += wyn
-
-# ===== 5) DODATKOWE KOSZTA =====
+# Dodatkowe koszta
 st.subheader("5) Dodatkowe koszta (dowolna liczba pozycji)")
-
-if "dodatkowe_df" not in st.session_state:
-    st.session_state["dodatkowe_df"] = pd.DataFrame(
-        columns=["row_id", "Nazwa", "Koszt"]
-    )
-
-def _add_extra():
-    df = st.session_state["dodatkowe_df"].copy()
-    new_id = int(df["row_id"].max()) + 1 if not df.empty else 1
-    new_row = {"row_id": new_id, "Nazwa": "", "Koszt": 0.0}
-    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-    st.session_state["dodatkowe_df"] = df
-
-def _drop_empty_extra():
-    df = st.session_state["dodatkowe_df"].copy()
-    mask = (df["Nazwa"].fillna("").str.strip() == "") & (df["Koszt"].fillna(0) == 0)
-    st.session_state["dodatkowe_df"] = df[~mask].reset_index(drop=True)
-
-ex1, ex2, _ = st.columns([1, 1, 6])
-ex1.button("➕ Dodaj pozycję", use_container_width=True, on_click=_add_extra)
-ex2.button("🗑️ Usuń puste", use_container_width=True, on_click=_drop_empty_extra)
-
 extra_df = st.data_editor(
-    st.session_state["dodatkowe_df"],
-    key="extras_editor",
+    st.session_state.extra_costs,
+    key="extra_costs_editor",
     num_rows="dynamic",
     use_container_width=True,
     hide_index=True,
-    column_config={
-        "row_id": st.column_config.NumberColumn("ID", disabled=True),
-        "Nazwa": st.column_config.TextColumn("Nazwa"),
-        "Koszt": st.column_config.NumberColumn(f"Koszt ({waluta_przychodu})", min_value=0.0, step=10.0),
-    },
-    column_order=["row_id", "Nazwa", "Koszt"],
+    column_config={"Kwota": st.column_config.NumberColumn(format="%.2f")},
 )
-st.session_state["dodatkowe_df"] = extra_df.copy()
+st.session_state.extra_costs = extra_df
 
-dodatkowe_suma = float(st.session_state["dodatkowe_df"].get("Koszt", pd.Series([])).fillna(0).sum())
+# Obliczenia
+przychod = float(kwota_calkowita or 0.0)
+podatek = 0.055 * przychod
+nieprzewidziane_kwota = (float(nieprzewidziane_proc) / 100.0) * przychod
+hotele = float(hotel_dzien) * float(dni_montazu or 0)
+dodatkowe_suma = _extra_costs_sum(extra_df)
+razem_koszty = podatek + float(zus or 0) + float(paliwo or 0) + hotele + nieprzewidziane_kwota + dodatkowe_suma
 
+wages_per_curr = _sum_wages_by_currency(emp_df)
+wynagrodzenia_total = sum(wages_per_curr.values())  # 1:1 bez FX
+saldo_po_kosztach = przychod - razem_koszty
+wynagrodzenia_w_przychodzie = wynagrodzenia_total
+po_wyn = saldo_po_kosztach - wynagrodzenia_w_przychodzie
+pieniadze_firmy = max(0.0, 0.10 * po_wyn)
+kwota_koncowa = po_wyn - pieniadze_firmy
 
-# --------- PODSUMOWANIA / KWOTY ----------
-koszty_razem = podatek + zus + paliwo + hotele + nieprzew_kwota + dodatkowe_suma
-saldo_po_kosztach = kwota_calkowita - koszty_razem  # jeszcze bez wynagrodzeń
-pieniadze_firmy = max(saldo_po_kosztach - (wyn_pln if waluta_przychodu == "PLN" else 0) - (wyn_eur if waluta_przychodu == "EUR" else 0), 0.0) * 0.10
-
-# Kwota końcowa po odjęciu wynagrodzeń + 10% firmy (po wynagrodzeniach)
-if waluta_przychodu == "PLN":
-    kwota_koncowa = saldo_po_kosztach - wyn_pln - pieniadze_firmy
-else:
-    kwota_koncowa = saldo_po_kosztach - wyn_eur - pieniadze_firmy
-
-# Prezentacja
+# Podsumowanie w UI
 st.subheader("6) Podsumowanie")
-cA, cB = st.columns([1, 1])
-with cA:
-    st.metric("Koszty łącznie", f"{pl_money(koszty_razem)} {waluta_przychodu}")
-    st.metric("Saldo po kosztach (bez wynagrodzeń)", f"{pl_money(saldo_po_kosztach)} {waluta_przychodu}")
-with cB:
-    st.metric("Wynagrodzenia w PLN", f"{pl_money(wyn_pln)} PLN")
-    st.metric("Wynagrodzenia w EUR", f"{pl_money(wyn_eur)} EUR")
+c1, c2 = st.columns((1, 1))
+with c1:
+    st.metric("Przychód", f"{fmt2(przychod)} {waluta_przychodu}")
+    st.metric("Razem koszty (bez wynagrodzeń)", f"{fmt2(razem_koszty)} {waluta_przychodu}")
+    st.metric("Saldo po kosztach (bez wynagrodzeń)", f"{fmt2(saldo_po_kosztach)} {waluta_przychodu}")
+with c2:
+    st.metric("Wynagrodzenia (łącznie)", f"{fmt2(wynagrodzenia_total)}")
+    st.metric("Pieniądze firmy (10%) po wynagrodzeniach", f"{fmt2(pieniadze_firmy)} {waluta_przychodu}")
+    st.metric("Kwota końcowa", f"{fmt2(kwota_koncowa)} {waluta_przychodu}")
 
-st.metric("Pieniądze firmy (10%) — po wynagrodzeniach", f"{pl_money(pieniadze_firmy)} {waluta_przychodu}")
-st.metric("Kwota końcowa", f"{pl_money(kwota_koncowa)} {waluta_przychodu}")
-
-
-# --------- GENEROWANIE PDF ----------
-st.subheader("7) Eksport do PDF")
-
-pdf_meta = {
+# PDF
+meta = {
     "nazwa": nazwa,
-    "data": data_d,
     "nr_projektu": nr_projektu,
-    "dni_montazu": int(dni_montazu),
-    "uwagi": uwagi,
+    "data": data_doc,
+    "dni_montazu": dni_montazu,
 }
-
-pdf_koszty = {
-    "waluta": waluta_przychodu,
+koszty_ctx = {
+    "waluta_przychodu": waluta_przychodu,
     "podatek": podatek,
-    "zus": zus,
-    "paliwo": paliwo,
-    "hotel_dzien": hotel_dzien,
+    "zus": float(zus or 0.0),
+    "paliwo": float(paliwo or 0.0),
+    "hotel_dzien": float(hotel_dzien or 0.0),
     "hotele": hotele,
-    "nieprzewidziane_proc": nieprzew_proc if tryb_nieprzew == "Suwak (% od przychodu)" else None,
-    "nieprzewidziane_kwota": nieprzew_kwota,
+    "nieprzewidziane_proc": float(nieprzewidziane_proc),
+    "nieprzewidziane_kwota": nieprzewidziane_kwota,
     "dodatkowe_suma": dodatkowe_suma,
-    "koszty_razem": koszty_razem,
+    "razem_koszty": razem_koszty,
     "saldo_po_kosztach": saldo_po_kosztach,
-    "godz_lacznie": godz_lacznie,
-    "wyn_pln": wyn_pln,
-    "wyn_eur": wyn_eur,
+    "wynagrodzenia_w_przychodzie": wynagrodzenia_w_przychodzie,
     "pieniadze_firmy": pieniadze_firmy,
     "kwota_koncowa": kwota_koncowa,
 }
 
-wm_logo = load_local_logo_bytes()  # watermark w PDF (jeśli brak uploadu, użyje repo logo)
+st.write("---")
+col_pdf1, col_pdf2 = st.columns((1, 2))
+with col_pdf1:
+    uploaded_logo = st.file_uploader("(opcjonalnie) Wgraj logo do znaku wodnego (PNG/JPG)", type=["png", "jpg", "jpeg"])
+    if uploaded_logo:
+        logo_bytes = uploaded_logo.read()
+    else:
+        logo_bytes = load_local_logo_bytes()
 
-if st.button("🧾 Generuj PDF", use_container_width=True):
-    try:
+    if st.button("📄 Generuj PDF", type="primary", use_container_width=True):
         pdf_bytes = build_pdf(
-            meta=pdf_meta,
-            koszty=pdf_koszty,
-            pracownicy_df=st.session_state["pracownicy_df"].copy(),
-            dodatkowe_df=st.session_state["dodatkowe_df"].copy(),
-            watermark_logo_bytes=wm_logo,
+            meta,
+            koszty_ctx,
+            st.session_state.employees,
+            st.session_state.extra_costs,
+            logo_bytes,  # używane wyłącznie jako znak wodny w PDF
         )
         st.download_button(
             label="⬇️ Pobierz PDF",
@@ -647,6 +630,8 @@ if st.button("🧾 Generuj PDF", use_container_width=True):
             mime="application/pdf",
             use_container_width=True,
         )
-        st.success("PDF wygenerowany.")
-    except Exception as e:
-        st.error(f"Nie udało się wygenerować PDF: {e}")
+with col_pdf2:
+    st.info(
+        "PDF jak wcześniej (bez logo w nagłówku), ale z **delikatnym znakiem wodnym logo** w tle. "
+        "W tabeli pracowników dodano **sumy per waluta**. Nagłówki i linie są **jasnoszare**."
+    )
