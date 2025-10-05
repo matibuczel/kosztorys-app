@@ -354,26 +354,32 @@ def apply_fixed_bg_from_repo_logo():
     if logo_bytes:
         b64 = base64.b64encode(logo_bytes).decode("utf-8")
         css = f"""
-        <style>
-        .stApp {{
-            background:
-                linear-gradient(rgba(255,255,255,0.85), rgba(255,255,255,0.85)),
-                url("data:image/png;base64,{b64}") no-repeat center center fixed !important;
-            background-size: cover !important;
-        }}
-        .stApp [data-testid="stVerticalBlock"] > div {{
-            background: rgba(242,244,247,0.85);
-            border: 1px solid #e6e8eb;
-            border-radius: 14px;
-            padding: 14px;
-            box-shadow: 0 1px 2px rgba(16,24,40,.04);
-        }}
-        thead tr {{
-            background-color: #f5f6f8 !important;
-        }}
-        </style>
-        """
-        st.markdown(css, unsafe_allow_html=True)
+<style>
+.stApp {{
+    background:
+        linear-gradient(rgba(255,255,255,0.92), rgba(255,255,255,0.92)),
+        url("data:image/png;base64,{b64}") no-repeat center center fixed !important;
+    background-size: cover !important;
+    color: #111 !important;  /* <--- wymuszenie ciemnych napisów */
+}}
+.stApp * {{
+    color: #111 !important;  /* <--- dotyczy wszystkich elementów */
+}}
+/* delikatne „karty” */
+.stApp [data-testid="stVerticalBlock"] > div {{
+    background: rgba(242,244,247,0.88);
+    border: 1px solid #e6e8eb;
+    border-radius: 14px;
+    padding: 14px;
+    box-shadow: 0 1px 2px rgba(16,24,40,.04);
+}}
+thead tr {{
+    background-color: #f5f6f8 !important;
+}}
+</style>
+"""
+st.markdown(css, unsafe_allow_html=True)
+
     else:
         st.markdown(
             """
