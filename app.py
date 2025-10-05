@@ -402,6 +402,61 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
 # 5) UI — Streamlit
 # ————————————————————————————————————————————————————————————————
 st.set_page_config(page_title="Kosztorys firmy", page_icon="📄", layout="wide")
+# ==== TŁO APLIKACJI (tylko w UI, NIE w PDF) ====
+import base64  # jeśli już masz import base64 wyżej — ten wiersz pomiń
+
+def _set_bg_gradient():
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background: linear-gradient(135deg, #f7f9fc 0%, #eef4ff 50%, #f7f9fc 100%) !important;
+            background-attachment: fixed;
+        }
+        /* delikatne "karty" pod treścią */
+        .stApp [data-testid="stVerticalBlock"] > div {
+            background: rgba(255,255,255,0.65);
+            border-radius: 14px;
+            padding: 12px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+def _set_bg_image(img_bytes: bytes):
+    b64 = base64.b64encode(img_bytes).decode("utf-8")
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background: url("data:image/png;base64,{b64}") no-repeat center center fixed !important;
+            background-size: cover !important;
+        }}
+        .stApp [data-testid="stVerticalBlock"] > div {{
+            background: rgba(255,255,255,0.70);
+            border-radius: 14px;
+            padding: 12px;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with st.sidebar:
+    st.markdown("### 🎨 Tło aplikacji (UI)")
+    bg_mode = st.radio("Wybierz tło strony", ["Brak", "Gradient", "Obraz"], horizontal=True)
+    bg_file = None
+    if bg_mode == "Obraz":
+        bg_file = st.file_uploader("Wgraj tło (JPG/PNG)", type=["jpg", "jpeg", "png"], key="bg_upload_ui")
+
+# zastosuj wybrane tło
+if bg_mode == "Gradient":
+    _set_bg_gradient()
+elif bg_mode == "Obraz" and bg_file is not None:
+    _set_bg_image(bg_file.read())
+# ==== koniec sekcji TŁO ====
+
 st.title("📄 Kosztorys firmy")
 st.caption(register_fonts())
 
