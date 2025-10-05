@@ -354,32 +354,26 @@ def apply_fixed_bg_from_repo_logo():
     if logo_bytes:
         b64 = base64.b64encode(logo_bytes).decode("utf-8")
         css = f"""
-<style>
-.stApp {{
-    background:
-        linear-gradient(rgba(255,255,255,0.92), rgba(255,255,255,0.92)),
-        url("data:image/png;base64,{b64}") no-repeat center center fixed !important;
-    background-size: cover !important;
-    color: #111 !important;  /* <--- wymuszenie ciemnych napisów */
-}}
-.stApp * {{
-    color: #111 !important;  /* <--- dotyczy wszystkich elementów */
-}}
-/* delikatne „karty” */
-.stApp [data-testid="stVerticalBlock"] > div {{
-    background: rgba(242,244,247,0.88);
-    border: 1px solid #e6e8eb;
-    border-radius: 14px;
-    padding: 14px;
-    box-shadow: 0 1px 2px rgba(16,24,40,.04);
-}}
-thead tr {{
-    background-color: #f5f6f8 !important;
-}}
-</style>
-"""
-st.markdown(css, unsafe_allow_html=True)
-
+        <style>
+        .stApp {{
+            background:
+                linear-gradient(rgba(255,255,255,0.85), rgba(255,255,255,0.85)),
+                url("data:image/png;base64,{b64}") no-repeat center center fixed !important;
+            background-size: cover !important;
+        }}
+        .stApp [data-testid="stVerticalBlock"] > div {{
+            background: rgba(242,244,247,0.85);
+            border: 1px solid #e6e8eb;
+            border-radius: 14px;
+            padding: 14px;
+            box-shadow: 0 1px 2px rgba(16,24,40,.04);
+        }}
+        thead tr {{
+            background-color: #f5f6f8 !important;
+        }}
+        </style>
+        """
+        st.markdown(css, unsafe_allow_html=True)
     else:
         st.markdown(
             """
@@ -445,35 +439,14 @@ paliwo = grid1[1].number_input(f"Paliwo + amortyzacja ({waluta_przychodu})", min
 hotel_dzien = grid1[2].number_input(f"Hotel / dzień ({waluta_przychodu})", min_value=0.0, step=10.0, value=0.0)
 hotele = hotel_dzien * dni_montazu
 
-def render_nieprzewidziane(waluta_przychodu: str, kwota_calkowita: float):
-    c1, c2 = st.columns([1, 1])
-    tryb = c1.radio(
-        "Koszta nieprzewidziane",
-        ["Suwak (% od przychodu)", "Wpiszę ręcznie"],
-        horizontal=True,
-        index=0,
-    )
-
-    if tryb == "Suwak (% od przychodu)":
-        proc = c2.slider(
-            "Koszta nieprzewidziane (% od przychodu)",
-            min_value=0, max_value=100, step=5, value=20
-        )
-        kwota = kwota_calkowita * (proc / 100.0)
-    else:
-        proc = None
-        kwota = c2.number_input(
-            f"Koszta nieprzewidziane ({waluta_przychodu})",
-            min_value=0.0, step=50.0, value=0.0
-        )
-    return tryb, proc, kwota
-
-# --- użycie:
-tryb_nieprzew, nieprzew_proc, nieprzew_kwota = render_nieprzewidziane(
-    waluta_przychodu, kwota_calkowita
-)
-
-
+g2c1, g2c2 = st.columns([1, 1])
+tryb_nieprzew = g2c1.radio("Koszta nieprzewidziane", ["Suwak (% od przychodu)", "Wpiszę ręcznie"], horizontal=True, index=0)
+if tryb_nieprzew == "Suwak (% od przychodu)":
+    nieprzew_proc = g2c2.slider("Koszta nieprzewidziane (% od przychodu)", min_value=0, max_value=100, step=5, value=20)
+    nieprzew_kwota = kwota_calkowita * (nieprzew_proc / 100.0)
+else:
+    nieprzew_proc = None
+    nieprzew_kwota = g2c2.number_input(f"Koszta nieprzewidziane ({waluta_przychodu})", min_value=0.0, step=50.0, value=0.0)
 
 # ===== 4) PRACOWNICY =====
 st.subheader("4) Pracownicy (indywidualne stawki)")
