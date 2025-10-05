@@ -18,7 +18,7 @@ from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, Image as RLImage  # <-- DODANE
 
 # =========================================================
 # 0) KONFIG / STAŁE
@@ -81,6 +81,22 @@ def compute_total_hours(days: int) -> int:
     full_weeks = days // 7
     rem = days % 7
     return full_weeks * WEEK_SUM + sum(WEEK_PATTERN[:rem])
+
+
+# ======== PDF: pomocnicze do logo w nagłówku ========
+def _pdf_logo_flowable(max_width_cm: float = 4.0):
+    """Zwraca ReportLab Image (flowable) z lokalnego logo, dopasowane szerokością."""
+    b = sanitize_image_bytes(load_local_logo_bytes())
+    if not b:
+        return None
+    try:
+        im = Image.open(io.BytesIO(b))
+        w, h = im.size
+        max_w = max_width_cm * cm
+        ratio = (max_w / float(w)) if w else 1.0
+        return RLImage(io.BytesIO(b), width=max_w, height=h * ratio)
+    except Exception:
+        return None
 
 
 # =========================================================
@@ -189,10 +205,17 @@ def build_pdf(
 
     elements: list[Any] = []
 
-    # Nagłówek
-    header_data = [[Paragraph(f"<b>{meta.get('nazwa') or 'Kosztorys'}</b>", styles["H1"]), ""]]
+    # Nagłówek (z logo po prawej)
+    logo_flow = _pdf_logo_flowable(4.0)  # ~4 cm szerokości
+    header_left = Paragraph(f"<b>{meta.get('nazwa') or 'Kosztorys'}</b>", styles["H1"])
+    header_right = logo_flow if logo_flow else ""
+    header_data = [[header_left, header_right]]
     t = Table(header_data, colWidths=[12 * cm, 5 * cm])
-    t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+    t.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
     elements += [t, Spacer(1, 6)]
 
     # Dane projektu
@@ -266,7 +289,6 @@ def build_pdf(
         wyn = rate * hrs
         emp_rows.append([name, pos, str(meta["dni_montazu"]), f"{hrs}", f"{pl_money(rate)}", wal, f"{pl_money(wyn)} {wal}"])
 
-    # poszerzone kolumny "Waluta" oraz "Wynagrodzenie" aby nie nachodziły na siebie
     te = Table(
         emp_rows,
         colWidths=[4.8 * cm, 3.0 * cm, 1.4 * cm, 2.0 * cm, 2.0 * cm, 1.7 * cm, 2.6 * cm],
@@ -355,6 +377,7 @@ def apply_fixed_bg_from_repo_logo():
         b64 = base64.b64encode(logo_bytes).decode("utf-8")
         css = f"""
         <style>
+        /* Tło i „karty” */
         .stApp {{
             background:
                 linear-gradient(rgba(255,255,255,0.85), rgba(255,255,255,0.85)),
@@ -368,8 +391,25 @@ def apply_fixed_bg_from_repo_logo():
             padding: 14px;
             box-shadow: 0 1px 2px rgba(16,24,40,.04);
         }}
-        thead tr {{
-            background-color: #f5f6f8 !important;
+        thead tr {{ background-color: #f5f6f8 !important; }}
+
+        /* === MOBILE OVERRIDES: wymuszenie czarnego tekstu === */
+        @media (max-width: 768px) {{
+            :root {{ color-scheme: light; }} /* powiedz przeglądarce: użyj jasnego schematu */
+            .stApp, .stApp * {{
+                color: #000 !important;
+                text-shadow: none !important;
+            }}
+            /* linki */
+            .stApp a {{ color: #0a58ca !important; }}
+            /* tytuły/metryki */
+            .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 {{ color: #000 !important; }}
+            .stApp [data-testid="stMetricValue"], 
+            .stApp [data-testid="stMetricLabel"] {{ color: #000 !important; }}
+            /* pola formularzy */
+            .stApp input, .stApp textarea, .stApp select {{ color: #000 !important; }}
+            /* tabele */
+            .stApp table, .stApp th, .stApp td {{ color: #000 !important; }}
         }}
         </style>
         """
@@ -389,10 +429,52 @@ def apply_fixed_bg_from_repo_logo():
                 padding: 14px;
                 box-shadow: 0 1px 2px rgba(16,24,40,.04);
             }
+
+            /* MOBILE: czarny tekst */
+            @media (max-width: 768px) {
+                :root { color-scheme: light; }
+                .stApp, .stApp * { color: #000 !important; text-shadow: none !important; }
+                .stApp a { color: #0a58ca !important; }
+                .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 { color: #000 !important; }
+                .stApp [data-testid="stMetricValue"],
+                .stApp [data-testid="stMetricLabel"] { color: #000 !important; }
+                .stApp input, .stApp textarea, .stApp select { color: #000 !important; }
+                .stApp table, .stApp th, .stApp td { color: #000 !important; }
+            }
             </style>
             """,
             unsafe_allow_html=True,
         )
+
+
+# ===== UI: logo przypięte w prawym górnym rogu =====
+def inject_top_right_logo():
+    """Dokleja logo w prawym górnym rogu aplikacji (warstwa HTML/CSS)."""
+    logo_bytes = sanitize_image_bytes(load_local_logo_bytes())
+    if not logo_bytes:
+        return
+    b64 = base64.b64encode(logo_bytes).decode("utf-8")
+    st.markdown(
+        f"""
+        <style>
+        .app-top-right-logo {{
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            height: 56px;
+            width: auto;
+            z-index: 1000;
+            opacity: 0.95;
+            pointer-events: none; /* nie blokuj kliknięć w UI */
+        }}
+        @media (max-width: 768px) {{
+            .app-top-right-logo {{ height: 40px; }}
+        }}
+        </style>
+        <img class="app-top-right-logo" src="data:image/png;base64,{b64}" alt="logo" />
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # =========================================================
@@ -402,6 +484,7 @@ def apply_fixed_bg_from_repo_logo():
 st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="wide")
 apply_fixed_bg_from_repo_logo()
 st.title(APP_TITLE)
+inject_top_right_logo()  # <-- DODANE
 
 # --------- METADANE -----------
 st.subheader("1) Metadane projektu")
