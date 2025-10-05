@@ -1,22 +1,10 @@
 from __future__ import annotations
 
-"""
-Refaktoryzacja aplikacji Streamlit „Kosztorys firmy”.
-Najważniejsze zmiany:
-- Jedno miejsce rejestracji czcionki (cache), brak wielokrotnych wywołań.
-- Poprawione opisy i nagłówki PDF; brak „None%” przy kosztach nieprzewidzianych.
-- Lepsza obsługa obrazów: cache konwersji PNG.
-- Porządki: typy, stałe, funkcje pomocnicze, mniejsze duplikaty kodu.
-- Bezpieczniejsze sumowania (Series z dtype), drobne poprawki UI.
-- Zostawiono ten sam model obliczeń (bez konwersji walut).
-"""
-
 import base64
 import io
-from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
-from typing import Any, Iterable
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -146,6 +134,8 @@ def make_on_page(wm_logo_bytes: bytes | None, meta: dict, styles: dict):
                     c.setFillAlpha(0.06)
                 except Exception:
                     pass
+                # OBRÓT 45°
+                c.rotate(45)
                 c.drawImage(img, -w * scale / 2, -h * scale / 2, w * scale, h * scale, mask="auto")
                 try:
                     c.setFillAlpha(1.0)
@@ -276,9 +266,10 @@ def build_pdf(
         wyn = rate * hrs
         emp_rows.append([name, pos, str(meta["dni_montazu"]), f"{hrs}", f"{pl_money(rate)}", wal, f"{pl_money(wyn)} {wal}"])
 
+    # poszerzone kolumny "Waluta" oraz "Wynagrodzenie" aby nie nachodziły na siebie
     te = Table(
         emp_rows,
-        colWidths=[5.0 * cm, 3.2 * cm, 1.5 * cm, 2.2 * cm, 2.2 * cm, 1.5 * cm, 1.9 * cm],
+        colWidths=[4.8 * cm, 3.0 * cm, 1.4 * cm, 2.0 * cm, 2.0 * cm, 1.7 * cm, 2.6 * cm],
     )
     te.setStyle(
         TableStyle(
@@ -411,8 +402,6 @@ def apply_fixed_bg_from_repo_logo():
 st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="wide")
 apply_fixed_bg_from_repo_logo()
 st.title(APP_TITLE)
-# wyświetlamy info o foncie w caption (dla debug)
-st.caption(f"Używany font PDF: {register_fonts()}")
 
 # --------- METADANE -----------
 st.subheader("1) Metadane projektu")
@@ -555,7 +544,7 @@ extra_df = st.data_editor(
 )
 st.session_state["dodatkowe_df"] = extra_df.copy()
 
-# Bezpieczne sumowanie – unikamy pd.Series([])
+# Bezpieczne sumowanie – unikamy deprecated pd.Series([])
 dodatkowe_suma = (
     st.session_state["dodatkowe_df"].get("Koszt", pd.Series(dtype=float)).fillna(0).sum()
 )
