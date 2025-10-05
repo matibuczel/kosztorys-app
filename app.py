@@ -23,6 +23,7 @@ from reportlab.platypus import (
     TableStyle,
     Paragraph,
     Spacer,
+    Image as RLImage
 )
 from reportlab.pdfgen.canvas import Canvas
 
@@ -192,23 +193,39 @@ def build_pdf(
 
     elements: list = []
 
-    # Nagłówek
-    header_data = [
+    # --- NAGŁÓWEK z logo w prawym górnym rogu ---
+# spróbujmy użyć tego samego logo co watermark, a jeśli brak – weź z repo
+header_logo_bytes = watermark_logo_bytes or load_local_logo_bytes()
+header_logo_safe = sanitize_image_bytes(header_logo_bytes)
+
+# tytuł po lewej
+title_para = Paragraph(f"<b>{meta.get('nazwa') or 'Kosztorys'}</b>", styles["H1"])
+
+# logo po prawej (skalowane do pudełka ~3.2cm × 2.0cm)
+if header_logo_safe:
+    logo_el = RLImage(io.BytesIO(header_logo_safe))
+    logo_el.hAlign = "RIGHT"
+    max_w, max_h = 3.2 * cm, 2.0 * cm
+    iw, ih = logo_el.imageWidth, logo_el.imageHeight
+    scale = min(max_w / iw, max_h / ih)
+    logo_el.drawWidth = iw * scale
+    logo_el.drawHeight = ih * scale
+else:
+    logo_el = ""
+
+header_data = [[title_para, logo_el]]
+t = Table(header_data, colWidths=[12 * cm, 5 * cm])
+t.setStyle(
+    TableStyle(
         [
-            Paragraph(f"<b>{meta.get('nazwa') or 'Kosztorys'}</b>", styles["H1"]),
-            "",
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (1, 0), (1, 0), "RIGHT"),  # logo do prawej
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ]
-    ]
-    t = Table(header_data, colWidths=[12 * cm, 5 * cm])
-    t.setStyle(
-        TableStyle(
-            [
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ]
-        )
     )
-    elements += [t, Spacer(1, 6)]
+)
+elements += [t, Spacer(1, 6)]
+
 
     # Dane projektu
     dane_proj = [
