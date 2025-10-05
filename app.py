@@ -1,6 +1,13 @@
 # app.py
+# ————————————————————————————————————————————————————————————————
+# Kosztorys firmy — Streamlit + ReportLab
+# Polskie znaki: DejaVuSans (fonts/DejaVuSans.ttf w repo).
+# Logo w nagłówku: plik logo.png w repo lub upload w UI.
+# Znak wodny: logo (delikatne) + opcjonalny tekst TYLKO jeśli wpiszesz w UI.
+# 10% „Pieniądze firmy” liczone PO wynagrodzeniach pracowników.
+# ————————————————————————————————————————————————————————————————
+
 import io
-import os
 import base64
 from pathlib import Path
 from datetime import date
@@ -8,11 +15,9 @@ from decimal import Decimal, ROUND_HALF_UP
 
 import pandas as pd
 import streamlit as st
+from PIL import Image  # weryfikacja obrazów
 
-# Pillow do walidacji/konwersji obrazów
-from PIL import Image
-
-# ReportLab / PDF
+# ReportLab
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -22,10 +27,9 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
 
-
-# =========================================================
-# 0) Wbudowane mini-logo (poprawne PNG) – awaryjny placeholder
-# =========================================================
+# ————————————————————————————————————————————————————————————————
+# 0) Awaryjne mini-logo (base64 PNG) gdy brak logo
+# ————————————————————————————————————————————————————————————————
 EMBEDDED_LOGO_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA"
     "B3RJTUUH5AkFDxk0c1qZqAAAAKxJREFUOMu1kz0OgkAQhv9J0j0qkI2wQbP0tCk7QdY6mP2kVY7s"
@@ -35,16 +39,14 @@ EMBEDDED_LOGO_B64 = (
     "RU5ErkJggg=="
 )
 
-# =========================================================
-# 1) Czcionka z PL znakami (automatyczna) + fallback
-#    Szukamy w: fonts/DejaVuSans.ttf (polecane),
-#    opcjonalnie bold: fonts/DejaVuSans-Bold.ttf
-# =========================================================
+# ————————————————————————————————————————————————————————————————
+# 1) Czcionki z PL znakami (DejaVuSans)
+# ————————————————————————————————————————————————————————————————
 FONT_REGULAR = "PLFont"
 FONT_BOLD = "PLFont-Bold"
 
 def register_fonts() -> str:
-    """Rejestruje DejaVuSans z repo (fonts/). Fallback = Helvetica."""
+    """Rejestruje DejaVuSans (regular + opcjonalnie bold). Fallback: Helvetica."""
     here = Path(__file__).parent
     info = []
 
@@ -78,10 +80,9 @@ def font_regular():
 def font_bold():
     return FONT_BOLD if FONT_BOLD in pdfmetrics.getRegisteredFontNames() else font_regular()
 
-
-# =========================================================
-# 2) Obrazki – walidacja i bezpieczne PNG
-# =========================================================
+# ————————————————————————————————————————————————————————————————
+# 2) Logo/obrazy — sanityzacja i ładowanie
+# ————————————————————————————————————————————————————————————————
 def sanitize_image_bytes(raw_bytes: bytes) -> bytes | None:
     """Waliduje obraz przez Pillow i zwraca bezpieczny PNG (RGBA)."""
     if not raw_bytes:
@@ -118,10 +119,9 @@ def get_header_logo_bytes(user_uploaded: bytes | None) -> bytes | None:
     except Exception:
         return None
 
-
-# =========================================================
-# 3) Helpery i obliczenia
-# =========================================================
+# ————————————————————————————————————————————————————————————————
+# 3) Obliczenia
+# ————————————————————————————————————————————————————————————————
 def money(v):
     if v is None:
         return Decimal("0.00")
@@ -134,7 +134,6 @@ def money(v):
 
 def fmt_money(v, symbol):
     v = money(v)
-    # format z przecinkiem jako separator dziesiętny
     s = f"{v:,.2f} {symbol}"
     return s.replace(",", " ").replace(".", ",")
 
@@ -190,7 +189,6 @@ def compute_summary(
                 "Wynagrodzenie (montaż)": wyn,
             })
 
-    # Salda i 10% po wynagrodzeniach
     saldo_po_kosztach = (przychod - koszty_w_przychodzie).quantize(Decimal("0.01"))
     wyn_w_walucie_przych = wynagrodzenia_per_waluta.get(waluta_przychodu, Decimal("0.00"))
     saldo_po_kosztach_i_wyn = (saldo_po_kosztach - wyn_w_walucie_przych).quantize(Decimal("0.01"))
@@ -211,10 +209,9 @@ def compute_summary(
         "saldo_final": saldo_final,
     }
 
-
-# =========================================================
-# 4) PDF
-# =========================================================
+# ————————————————————————————————————————————————————————————————
+# 4) Generowanie PDF
+# ————————————————————————————————————————————————————————————————
 def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=None, watermark_logo_bytes=None):
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="H1", fontSize=16, leading=20, spaceAfter=10, fontName=font_bold()))
@@ -225,17 +222,14 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.8*cm, rightMargin=1.8*cm, topMargin=2*cm, bottomMargin=1.8*cm)
     elements = []
 
-    # Ustal logo raz – użyjemy też jako domyślny watermark
+    # Nagłówek i logo
     header_logo_safe = get_header_logo_bytes(logo_bytes)
-
-    # --- Nagłówek ---
     header_data = [[Paragraph(f"<b>{meta['nazwa'] or 'Kosztorys'}</b>", styles["H1"]), ""]]
     if header_logo_safe:
         header_data[0][1] = RLImage(io.BytesIO(header_logo_safe), width=3.2*cm, height=3.2*cm)
     header_tbl = Table(header_data, colWidths=[12*cm, 4*cm])
     header_tbl.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"MIDDLE"), ("ALIGN",(1,0),(1,0),"RIGHT")]))
     elements.append(header_tbl)
-
     elements.append(Paragraph(
         f"Projekt: <b>{meta['nr_projektu'] or '-'}</b> • Data: <b>{meta['data'].strftime('%Y-%m-%d')}</b> • Dni montażu: <b>{summary['dni_montazu']}</b>",
         styles["Small"]
@@ -244,7 +238,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
         elements.append(Paragraph(meta["opis"], styles["Body"]))
     elements.append(Spacer(1, 8))
 
-    # --- Przychód ---
+    # PRZYCHÓD
     elements.append(Paragraph("Przychód", styles["H2"]))
     if summary["from_kwp"]:
         t1 = Table([
@@ -261,7 +255,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     ]))
     elements.append(t1)
 
-    # --- Koszty ---
+    # KOSZTY
     elements.append(Spacer(1,4))
     elements.append(Paragraph("Koszty (w walucie przychodu)", styles["H2"]))
     nieprz_label = (
@@ -289,7 +283,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     ]))
     elements.append(t2)
 
-    # --- Pracownicy ---
+    # PRACOWNICY
     elements.append(Spacer(1,4))
     elements.append(Paragraph("Pracownicy (wynagrodzenia za cały montaż)", styles["H2"]))
     header = ["Imię i nazwisko","Stanowisko","Godz. łącznie","Stawka","Waluta","Wynagrodzenie"]
@@ -317,7 +311,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     ]))
     elements.append(t3)
 
-    # --- Wynagrodzenia per waluta (zbiorczo) ---
+    # Zbiorcze wynagrodzenia per waluta
     if summary["wynagrodzenia_per_waluta"]:
         w_rows = [["Waluta","Razem wynagrodzenia (montaż)"]]
         for wal, kw in summary["wynagrodzenia_per_waluta"].items():
@@ -331,7 +325,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
         ]))
         elements.append(Spacer(1,2)); elements.append(t_w)
 
-    # --- Podsumowanie ---
+    # PODSUMOWANIE
     elements.append(Spacer(1,8))
     elements.append(Paragraph("Podsumowanie (waluta przychodu)", styles["H2"]))
     t4 = Table([
@@ -350,74 +344,68 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     ]))
     elements.append(t4)
 
-    # --- Uwagi ---
+    # UWAGI
     if meta["uwagi"]:
         elements.append(Spacer(1,6))
         elements.append(Paragraph("Uwagi", styles["H2"]))
         elements.append(Paragraph(meta["uwagi"], styles["Body"]))
 
-    # --- Znak wodny + stopka ---
-   def on_page(c, _):
-    # domyślnie jako watermark obrazowy użyj logo z nagłówka (o ile nie podano innego)
-    wm_logo_safe = sanitize_image_bytes(watermark_logo_bytes) if watermark_logo_bytes else header_logo_safe
+    # ——— Znak wodny i stopka ———
+    def on_page(c, _):
+        wm_logo_safe = sanitize_image_bytes(watermark_logo_bytes) if watermark_logo_bytes else header_logo_safe
 
-    # 1) Znak wodny - LOGO (mniejsze i delikatniejsze)
-    if wm_logo_safe:
-        try:
-            img = ImageReader(io.BytesIO(wm_logo_safe))
-            w, h = img.getSize()
-            page_w, page_h = A4
-            scale = 0.6 * min(page_w / w, page_h / h)
+        # LOGO jako watermark – delikatne i mniejsze
+        if wm_logo_safe:
+            try:
+                img = ImageReader(io.BytesIO(wm_logo_safe))
+                w, h = img.getSize()
+                page_w, page_h = A4
+                scale = 0.6 * min(page_w / w, page_h / h)  # mniej nachalne
+                c.saveState()
+                c.translate(page_w / 2, page_h / 2)
+                c.rotate(30)
+                try:
+                    c.setFillAlpha(0.12)  # przezroczystość
+                except Exception:
+                    pass
+                c.drawImage(img, -w * scale / 2, -h * scale / 2, w * scale, h * scale, mask='auto')
+                try:
+                    c.setFillAlpha(1.0)
+                except Exception:
+                    pass
+                c.restoreState()
+            except Exception:
+                pass
+
+        # Tekst watermarku rysujemy TYLKO jeśli użytkownik wpisał tekst w UI
+        if watermark_text and watermark_text.strip():
+            txt = watermark_text.strip().upper()
             c.saveState()
-            c.translate(page_w / 2, page_h / 2)
+            c.setFont(font_bold(), 56)
+            c.setFillColor(colors.Color(0.70, 0.70, 0.70, alpha=0.12))
+            c.translate(A4[0] / 2, A4[1] / 2)
             c.rotate(30)
-            try:
-                c.setFillAlpha(0.12)
-            except Exception:
-                pass
-            c.drawImage(img, -w * scale / 2, -h * scale / 2, w * scale, h * scale, mask='auto')
-            try:
-                c.setFillAlpha(1.0)
-            except Exception:
-                pass
+            c.drawCentredString(0, 0, txt)
             c.restoreState()
-        except Exception:
-            pass
 
-    # 2) Znak wodny - TEKST rysujemy TYLKO jeśli wpiszesz tekst w UI
-    if watermark_text and watermark_text.strip():
-        txt = watermark_text.strip().upper()
+        # Stopka
         c.saveState()
-        c.setFont(font_bold(), 56)
-        c.setFillColor(colors.Color(0.70, 0.70, 0.70, alpha=0.12))
-        c.translate(A4[0] / 2, A4[1] / 2)
-        c.rotate(30)
-        c.drawCentredString(0, 0, txt)
+        c.setFont(font_regular(), 8)
+        c.setFillColor(colors.grey)
+        footer = f"Projekt: {meta['nr_projektu'] or '-'} • Data: {meta['data'].strftime('%Y-%m-%d')} • Dni montażu: {summary['dni_montazu']}"
+        c.drawString(1.8 * cm, 1.2 * cm, footer)
         c.restoreState()
-
-    # stopka
-    c.saveState()
-    c.setFont(font_regular(), 8)
-    c.setFillColor(colors.grey)
-    footer = f"Projekt: {meta['nr_projektu'] or '-'} • Data: {meta['data'].strftime('%Y-%m-%d')} • Dni montażu: {summary['dni_montazu']}"
-    c.drawString(1.8 * cm, 1.2 * cm, footer)
-    c.restoreState()
-
-
 
     doc.build(elements, onFirstPage=on_page, onLaterPages=on_page)
 
-
-# =========================================================
-# 5) UI
-# =========================================================
+# ————————————————————————————————————————————————————————————————
+# 5) UI — Streamlit
+# ————————————————————————————————————————————————————————————————
 st.set_page_config(page_title="Kosztorys firmy", page_icon="📄", layout="wide")
 st.title("📄 Kosztorys firmy")
-
-# Rejestracja czcionek (PL znaki)
 st.caption(register_fonts())
 
-# --- Metadane
+# Metadane
 st.subheader("1) Metadane projektu")
 c1,c2,c3,c4 = st.columns([2,1,1,2])
 nazwa = c1.text_input("Nazwa kosztorysu / projektu", placeholder="Nazwa")
@@ -425,7 +413,7 @@ data_proj = c2.date_input("Data", value=date.today(), format="YYYY-MM-DD")
 nr_projektu = c3.text_input("Numer projektu", placeholder="NP-2025-001")
 opis = c4.text_input("Opis (opcjonalnie)", placeholder="Krótki opis")
 
-# --- Przychód
+# Przychód
 st.subheader("2) Przychód i parametry montażu")
 cTop = st.columns([2,1,1,1])
 mode = cTop[0].radio("Sposób podania przychodu", ["Ręcznie", "Z kWp"], horizontal=True)
@@ -448,7 +436,7 @@ else:
     cK[2].metric("Wyliczony przychód", fmt_money(kwota_calkowita, waluta_przychodu))
     from_kwp = True
 
-# --- Koszty
+# Koszty
 st.subheader("3) Koszty (w walucie przychodu)")
 k1,k2,k3 = st.columns(3)
 podatek_proc = k1.number_input("Podatek skarbowy (%)", min_value=0.0, value=5.5, step=0.1)
@@ -472,7 +460,7 @@ else:
     nieprzewidziane_proc = 0
     nieprzewidziane_mode_key = "manual"
 
-# --- Pracownicy
+# Pracownicy
 st.subheader("4) Pracownicy (indywidualne stawki)")
 if "pracownicy_df" not in st.session_state:
     st.session_state["pracownicy_df"] = pd.DataFrame([{"Imię i nazwisko":"", "Stanowisko":"", "Stawka":0.0, "Waluta":"PLN"}])
@@ -499,7 +487,7 @@ prac_df = st.data_editor(
 if not prac_df.equals(st.session_state["pracownicy_df"]):
     st.session_state["pracownicy_df"] = prac_df
 
-# --- Dodatkowe koszta
+# Dodatkowe koszta
 st.subheader("5) Dodatkowe koszta (dowolna liczba pozycji)")
 if "dodatkowe_df" not in st.session_state:
     st.session_state["dodatkowe_df"] = pd.DataFrame(columns=["Nazwa","Koszt"])
@@ -513,7 +501,7 @@ ed_df = st.data_editor(
 if not ed_df.equals(st.session_state["dodatkowe_df"]):
     st.session_state["dodatkowe_df"] = ed_df
 
-# --- Uwagi i branding
+# Uwagi i branding
 st.subheader("6) Uwagi i branding")
 uwagi = st.text_area("UWAGI (pojawią się na dole PDF)", height=100)
 lc1, lc2 = st.columns(2)
@@ -523,7 +511,7 @@ watermark_logo = st.file_uploader("Inne logo jako znak wodny (opcjonalnie, PNG/J
 logo_header_bytes = logo_header.read() if logo_header else None
 watermark_logo_bytes = watermark_logo.read() if watermark_logo else None
 
-# --- Podsumowanie i eksport
+# Podsumowanie + eksport
 st.subheader("7) Podsumowanie i eksport")
 summary = compute_summary(
     kwota_calkowita=kwota_calkowita, waluta_przychodu=waluta_przychodu,
@@ -564,6 +552,3 @@ if st.button("📥 Generuj PDF"):
     )
     buffer.seek(0)
     st.download_button("Pobierz PDF", data=buffer, file_name=pdf_name, mime="application/pdf")
-
-
-
