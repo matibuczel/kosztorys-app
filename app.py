@@ -358,9 +358,10 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
 
     # --- Znak wodny + stopka ---
     def on_page(c, _):
+    # domyślnie jako watermark obrazowy użyj logo z nagłówka (o ile nie podano innego)
     wm_logo_safe = sanitize_image_bytes(watermark_logo_bytes) if watermark_logo_bytes else header_logo_safe
 
-    # LOGO jako watermark – mniejsze i bardziej przezroczyste
+    # 1) Znak wodny - LOGO (mniejsze i delikatniejsze)
     if wm_logo_safe:
         try:
             img = ImageReader(io.BytesIO(wm_logo_safe))
@@ -368,24 +369,29 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
             page_w, page_h = A4
             scale = 0.6 * min(page_w / w, page_h / h)
             c.saveState()
-            c.translate(page_w/2, page_h/2)
+            c.translate(page_w / 2, page_h / 2)
             c.rotate(30)
-            try: c.setFillAlpha(0.12)
-            except Exception: pass
-            c.drawImage(img, -w*scale/2, -h*scale/2, w*scale, h*scale, mask='auto')
-            try: c.setFillAlpha(1.0)
-            except Exception: pass
+            try:
+                c.setFillAlpha(0.12)
+            except Exception:
+                pass
+            c.drawImage(img, -w * scale / 2, -h * scale / 2, w * scale, h * scale, mask='auto')
+            try:
+                c.setFillAlpha(1.0)
+            except Exception:
+                pass
             c.restoreState()
         except Exception:
             pass
 
-    # TEKST watermarku – rysuj TYLKO jeśli użytkownik wpisał tekst
+    # 2) Znak wodny - TEKST rysujemy TYLKO jeśli wpiszesz tekst w UI
     if watermark_text and watermark_text.strip():
         txt = watermark_text.strip().upper()
         c.saveState()
         c.setFont(font_bold(), 56)
         c.setFillColor(colors.Color(0.70, 0.70, 0.70, alpha=0.12))
-        c.translate(A4[0]/2, A4[1]/2); c.rotate(30)
+        c.translate(A4[0] / 2, A4[1] / 2)
+        c.rotate(30)
         c.drawCentredString(0, 0, txt)
         c.restoreState()
 
@@ -394,8 +400,9 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
     c.setFont(font_regular(), 8)
     c.setFillColor(colors.grey)
     footer = f"Projekt: {meta['nr_projektu'] or '-'} • Data: {meta['data'].strftime('%Y-%m-%d')} • Dni montażu: {summary['dni_montazu']}"
-    c.drawString(1.8*cm, 1.2*cm, footer)
+    c.drawString(1.8 * cm, 1.2 * cm, footer)
     c.restoreState()
+
 
 
     doc.build(elements, onFirstPage=on_page, onLaterPages=on_page)
@@ -557,4 +564,5 @@ if st.button("📥 Generuj PDF"):
     )
     buffer.seek(0)
     st.download_button("Pobierz PDF", data=buffer, file_name=pdf_name, mime="application/pdf")
+
 
