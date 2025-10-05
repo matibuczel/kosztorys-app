@@ -277,35 +277,56 @@ def build_pdf(
     )
     elements += [tk, Spacer(1, 12)]
 
-    # Pracownicy
+        # Pracownicy
     elements.append(Paragraph("Pracownicy (wynagrodzenia za cały montaż)", styles["H2"]))
-    emp_rows = [["Imię i nazwisko", "Stanowisko", "Dni", "Godz. łącznie", "Stawka", "Waluta", "Wynagrodzenie"]]
+
+    # Nagłówki jako Paragraph + wymuszone łamanie wierszy
+    header_small = styles["Small"]
+    emp_rows = [[
+        Paragraph("Imię i nazwisko", header_small),
+        Paragraph("Stanowisko", header_small),
+        Paragraph("Dni", header_small),
+        Paragraph("Godz.<br/>łącznie", header_small),  # wymuszone złamanie
+        Paragraph("Stawka", header_small),
+        Paragraph("Waluta", header_small),
+        Paragraph("Wynagrodzenie", header_small),
+    ]]
+
     for _, r in pracownicy_df.iterrows():
         name = r.get("Imię i nazwisko", "")
         pos = r.get("Stanowisko", "")
         rate = float(r.get("Stawka", 0) or 0)
         wal = r.get("Waluta", "PLN") or "PLN"
-        hrs = int(koszty["godz_lacznie"])  # z meta dni -> godziny
+        hrs = int(koszty["godz_lacznie"])
         wyn = rate * hrs
-        emp_rows.append([name, pos, str(meta["dni_montazu"]), f"{hrs}", f"{pl_money(rate)}", wal, f"{pl_money(wyn)} {wal}"])
+        emp_rows.append([
+            name, pos, str(meta["dni_montazu"]), f"{hrs}",
+            f"{pl_money(rate)}", wal, f"{pl_money(wyn)} {wal}"
+        ])
 
-    te = Table(
-        emp_rows,
-        colWidths=[4.8 * cm, 3.0 * cm, 1.4 * cm, 2.0 * cm, 2.0 * cm, 1.7 * cm, 2.6 * cm],
-    )
-    te.setStyle(
-        TableStyle(
-            [
-                ("FONTNAME", (0, 0), (-1, -1), register_fonts()),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
-                ("BOX", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-            ]
-        )
-    )
+    # Szerokości dopasowane do pola treści (17.7 cm łącznie)
+    colWidths_emp = [4.7*cm, 2.9*cm, 1.5*cm, 2.1*cm, 2.0*cm, 1.7*cm, 2.8*cm]
+
+    te = Table(emp_rows, colWidths=colWidths_emp, repeatRows=1)
+    te.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), register_fonts()),
+        ("FONTSIZE", (0, 1), (-1, -1), 9),          # treść
+        ("FONTSIZE", (0, 0), (-1, 0), 8),           # nagłówek ciut mniejszy
+        ("LEADING", (0, 0), (-1, 0), 10),           # odstęp wiersza w nagłówku
+
+        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+
+        # Lepsze upakowanie + zawijanie
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("WORDWRAP", (0, 0), (-1, -1), "CJK"),
+
+        ("BOX", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+    ]))
     elements += [te, Spacer(1, 10)]
+
 
     # Dodatkowe koszta – lista
     if not dodatkowe_df.empty:
