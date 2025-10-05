@@ -357,7 +357,7 @@ def build_pdf(buf, meta, summary, dodatkowe_df, logo_bytes=None, watermark_text=
         elements.append(Paragraph(meta["uwagi"], styles["Body"]))
 
     # --- Znak wodny + stopka ---
-    def on_page(c, _):
+   def on_page(c, _):
     # domyślnie jako watermark obrazowy użyj logo z nagłówka (o ile nie podano innego)
     wm_logo_safe = sanitize_image_bytes(watermark_logo_bytes) if watermark_logo_bytes else header_logo_safe
 
@@ -564,5 +564,6 @@ if st.button("📥 Generuj PDF"):
     )
     buffer.seek(0)
     st.download_button("Pobierz PDF", data=buffer, file_name=pdf_name, mime="application/pdf")
+
 
 
